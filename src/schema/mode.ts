@@ -10,6 +10,7 @@ export type ExtensionMode = Static<typeof ExtensionModeSchema>;
 
 export const ExtensionConfigSchema = Type.Object({
 	mode: Type.Optional(ExtensionModeSchema),
+	taskDir: Type.Optional(Type.String({ minLength: 1 })),
 });
 
 export type ExtensionConfig = Static<typeof ExtensionConfigSchema>;

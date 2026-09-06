@@ -1,6 +1,6 @@
 # pi-dag-compact
 
-Pi extension for bounded working memory. **M0:** classic-compaction baseline only.
+Pi extension for bounded working memory.
 
 Idea: **aimatlow** on Discord.
 

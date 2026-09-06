@@ -4,8 +4,8 @@ This is a public Pi package. Treat it as shareable source, not a scratch pad.
 
 ## Current milestone
 
-M0: fixture and classic baseline. Do not implement Graphology, SQLite, or
-explicit DAG handoff unless the user asks to start M1/M2.
+M1: record-only working memory. Do not implement `/dag-handoff` unless asked
+to start M2. Classic compaction stays default.
 
 ## Hard rules
 
@@ -14,6 +14,7 @@ explicit DAG handoff unless the user asks to start M1/M2.
 - Never commit eval artifacts, `.env`, or session JSONL.
 - Pin dependency versions.
 - Do not describe unmeasured token savings or CUDA speedups as results.
+- Do not open BrowserOS neo tabs in the foreground. Use `background: true`.
 
 ## Commands
 

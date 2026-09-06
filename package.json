@@ -1,6 +1,6 @@
 {
 	"name": "pi-dag-compact",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "Pi extension for bounded working memory and durable research evidence, with a scripted classic-compaction evaluation harness.",
 	"author": "Greg Tiller",
 	"license": "MIT",
@@ -82,5 +82,9 @@
 		"@types/node": "24.13.3",
 		"typebox": "1.3.7",
 		"typescript": "5.9.3"
+	},
+	"dependencies": {
+		"graphology": "0.26.0",
+		"graphology-dag": "0.4.1"
 	}
 }

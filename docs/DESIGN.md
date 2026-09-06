@@ -55,7 +55,7 @@ sequence all succeed.
 
 | Stage | Exit |
 |---|---|
-| **M0** (this release) | Reproducible classic baseline; no DAG code required |
+| **M0** | Reproducible classic baseline |
 | **M1** | Recover baseline, constraints, rejections, and next action from durable records |
 | **M2** | First A/B evidence of value, or a documented failure to improve |
 | **M3** | Bounded real pilot and longer stress; CUDA speedup is a separate measurement |
