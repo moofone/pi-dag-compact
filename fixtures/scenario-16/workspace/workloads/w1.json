@@ -1,0 +1,8 @@
+{
+	"id": "W1",
+	"name": "synthetic complete pipeline",
+	"dimensions": { "M": 4096, "N": 4096, "K": 4096 },
+	"seed": 7,
+	"stages": ["preprocess", "gemm", "epilogue", "postprocess"],
+	"notes": "Synthetic workload identity for the 16-turn fixture. Not a real CUDA bench."
+}

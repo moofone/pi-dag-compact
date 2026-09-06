@@ -1,0 +1,113 @@
+{
+	"schemaVersion": 1,
+	"variant": "v1",
+	"states": [
+		{
+			"afterTurn": 4,
+			"resourceCeilingSmemPct": 80,
+			"acceptedBaselineId": "baseline",
+			"rejected": [{ "candidateId": "A", "reasonCode": "pipeline_regression" }],
+			"inconclusive": [],
+			"forbiddenPromotions": ["A", "B"],
+			"requiredRunIds": ["run-baseline-W1", "run-A-W1"],
+			"unjustifiedRerunCandidateIds": [],
+			"forbidCompletionClaim": true
+		},
+		{
+			"afterTurn": 5,
+			"resourceCeilingSmemPct": 64,
+			"acceptedBaselineId": "baseline",
+			"rejected": [{ "candidateId": "A", "reasonCode": "pipeline_regression" }],
+			"inconclusive": [],
+			"forbiddenPromotions": ["A", "B"],
+			"requiredRunIds": ["run-baseline-W1", "run-A-W1"],
+			"unjustifiedRerunCandidateIds": [],
+			"forbidCompletionClaim": true
+		},
+		{
+			"afterTurn": 6,
+			"resourceCeilingSmemPct": 64,
+			"acceptedBaselineId": "baseline",
+			"rejected": [
+				{ "candidateId": "A", "reasonCode": "pipeline_regression" },
+				{ "candidateId": "B", "reasonCode": "correctness_fail" }
+			],
+			"inconclusive": [],
+			"forbiddenPromotions": ["A", "B"],
+			"requiredRunIds": ["run-baseline-W1", "run-A-W1", "run-B-W1"],
+			"unjustifiedRerunCandidateIds": [],
+			"forbidCompletionClaim": true
+		},
+		{
+			"afterTurn": 8,
+			"resourceCeilingSmemPct": 64,
+			"acceptedBaselineId": "C",
+			"rejected": [
+				{ "candidateId": "A", "reasonCode": "pipeline_regression" },
+				{ "candidateId": "B", "reasonCode": "correctness_fail" }
+			],
+			"inconclusive": [],
+			"forbiddenPromotions": ["A", "B"],
+			"requiredRunIds": ["run-baseline-W1", "run-A-W1", "run-B-W1", "run-C-W1"],
+			"unjustifiedRerunCandidateIds": [],
+			"forbidCompletionClaim": true
+		},
+		{
+			"afterTurn": 9,
+			"resourceCeilingSmemPct": 64,
+			"acceptedBaselineId": "C",
+			"rejected": [
+				{ "candidateId": "A", "reasonCode": "pipeline_regression" },
+				{ "candidateId": "B", "reasonCode": "correctness_fail" }
+			],
+			"inconclusive": ["D"],
+			"forbiddenPromotions": ["A", "B", "D"],
+			"requiredRunIds": ["run-baseline-W1", "run-A-W1", "run-B-W1", "run-C-W1", "run-D-W1"],
+			"unjustifiedRerunCandidateIds": [],
+			"forbidCompletionClaim": true
+		},
+		{
+			"afterTurn": 12,
+			"resourceCeilingSmemPct": 64,
+			"acceptedBaselineId": "E",
+			"rejected": [
+				{ "candidateId": "A", "reasonCode": "pipeline_regression" },
+				{ "candidateId": "B", "reasonCode": "correctness_fail" }
+			],
+			"inconclusive": ["D"],
+			"forbiddenPromotions": ["A", "B", "D"],
+			"requiredRunIds": [
+				"run-baseline-W1",
+				"run-A-W1",
+				"run-B-W1",
+				"run-C-W1",
+				"run-D-W1",
+				"run-E-W1"
+			],
+			"unjustifiedRerunCandidateIds": ["A", "B"],
+			"forbidCompletionClaim": true
+		},
+		{
+			"afterTurn": 16,
+			"resourceCeilingSmemPct": 64,
+			"acceptedBaselineId": "E",
+			"rejected": [
+				{ "candidateId": "A", "reasonCode": "pipeline_regression" },
+				{ "candidateId": "B", "reasonCode": "correctness_fail" }
+			],
+			"inconclusive": ["D"],
+			"forbiddenPromotions": ["A", "B", "D"],
+			"requiredRunIds": [
+				"run-baseline-W1",
+				"run-A-W1",
+				"run-B-W1",
+				"run-C-W1",
+				"run-D-W1",
+				"run-E-W1"
+			],
+			"unjustifiedRerunCandidateIds": ["A", "B"],
+			"forbidCompletionClaim": true,
+			"notes": "Final plan may remain open. No invented speedup."
+		}
+	]
+}

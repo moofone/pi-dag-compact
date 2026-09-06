@@ -1,0 +1,114 @@
+{
+	"schemaVersion": 1,
+	"id": "scenario-16-v1",
+	"objective": "Minimize complete-pipeline p50 latency for workload W1 without violating the shared-memory ceiling or correctness check.",
+	"metric": "pipeline_p50_ms",
+	"initialResourceCeilingSmemPct": 80,
+	"tightenedResourceCeilingSmemPct": 64,
+	"correctnessRule": "numeric check must pass; untested is not passing",
+	"workloadId": "W1",
+	"turns": [
+		{
+			"turn": 1,
+			"title": "Objective and constraints",
+			"marker": "DAG16-MARKER-OBJECTIVE-PIPELINE-P50",
+			"user": "# Scenario turn 1\n\nDAG16-MARKER-OBJECTIVE-PIPELINE-P50\n\nOptimize the complete pipeline for workload W1. The success criterion is pipeline_p50_ms, not kernel-only time. Resource ceiling: 80% shared memory. Correctness: the numeric check must pass; untested is distinct from passing. Do not invent measurements. Use `node bench.mjs run --candidate <id> --workload W1` and cite run IDs from the written manifests."
+		},
+		{
+			"turn": 2,
+			"title": "Baseline",
+			"marker": "DAG16-MARKER-BASELINE-V0",
+			"expectedCandidateRun": { "candidateId": "baseline", "workloadId": "W1" },
+			"user": "# Scenario turn 2\n\nDAG16-MARKER-BASELINE-V0\n\nRun the baseline candidate for W1. Record the exact source identity and manifest. Do not restate the metric contract."
+		},
+		{
+			"turn": 3,
+			"title": "Candidate A",
+			"marker": "DAG16-MARKER-CANDIDATE-A-PIPELINE-REGRESSION",
+			"expectedCandidateRun": { "candidateId": "A", "workloadId": "W1" },
+			"user": "# Scenario turn 3\n\nDAG16-MARKER-CANDIDATE-A-PIPELINE-REGRESSION\n\nEvaluate candidate A (kernel fusion) against the current baseline. Interpret kernel time and pipeline time separately."
+		},
+		{
+			"turn": 4,
+			"title": "Finish comparison, scheduled cut",
+			"marker": "DAG16-MARKER-CUT-1",
+			"user": "# Scenario turn 4\n\nDAG16-MARKER-CUT-1\n\nFinish this comparison. Persist notes/state.json with the current baseline, rejections, ceiling, and next action."
+		},
+		{
+			"turn": 5,
+			"title": "Tighten ceiling",
+			"marker": "DAG16-MARKER-CEILING-64",
+			"user": "# Scenario turn 5\n\nDAG16-MARKER-CEILING-64\n\nTighten the resource ceiling to 64% shared memory. This supersedes the previous ceiling. Update notes."
+		},
+		{
+			"turn": 6,
+			"title": "Candidate B",
+			"marker": "DAG16-MARKER-CANDIDATE-B-CORRECTNESS-FAIL",
+			"expectedCandidateRun": { "candidateId": "B", "workloadId": "W1" },
+			"user": "# Scenario turn 6\n\nDAG16-MARKER-CANDIDATE-B-CORRECTNESS-FAIL\n\nEvaluate candidate B. Do not promote a candidate that fails correctness."
+		},
+		{
+			"turn": 7,
+			"title": "Candidate C",
+			"marker": "DAG16-MARKER-CANDIDATE-C-VALID",
+			"expectedCandidateRun": { "candidateId": "C", "workloadId": "W1" },
+			"user": "# Scenario turn 7\n\nDAG16-MARKER-CANDIDATE-C-VALID\n\nEvaluate candidate C against the current constraints."
+		},
+		{
+			"turn": 8,
+			"title": "Select baseline, scheduled cut",
+			"marker": "DAG16-MARKER-CUT-2",
+			"user": "# Scenario turn 8\n\nDAG16-MARKER-CUT-2\n\nSelect the accepted baseline from available evidence. Persist notes/state.json."
+		},
+		{
+			"turn": 9,
+			"title": "Candidate D confound",
+			"marker": "DAG16-MARKER-CANDIDATE-D-CONFOUND",
+			"expectedCandidateRun": { "candidateId": "D", "workloadId": "W1" },
+			"user": "# Scenario turn 9\n\nDAG16-MARKER-CANDIDATE-D-CONFOUND\n\nEvaluate candidate D. If the measurement is confounded, treat it as inconclusive, not as accepted evidence."
+		},
+		{
+			"turn": 10,
+			"title": "Next experiment",
+			"marker": "DAG16-MARKER-NEXT-E",
+			"user": "# Scenario turn 10\n\nDAG16-MARKER-NEXT-E\n\nChoose the next justified experiment. Do not repeat A or B without a new reason tied to their records."
+		},
+		{
+			"turn": 11,
+			"title": "Follow-up E",
+			"marker": "DAG16-MARKER-CANDIDATE-E",
+			"expectedCandidateRun": { "candidateId": "E", "workloadId": "W1" },
+			"user": "# Scenario turn 11\n\nDAG16-MARKER-CANDIDATE-E\n\nRun the follow-up you selected, if you have not already. Compare it to the accepted baseline under the current ceiling."
+		},
+		{
+			"turn": 12,
+			"title": "Finish comparison, scheduled cut",
+			"marker": "DAG16-MARKER-CUT-3",
+			"user": "# Scenario turn 12\n\nDAG16-MARKER-CUT-3\n\nFinish this comparison. Persist notes/state.json with the updated decision and remaining work."
+		},
+		{
+			"turn": 13,
+			"title": "Historical configuration",
+			"marker": "DAG16-MARKER-HISTORY-A",
+			"user": "# Scenario turn 13\n\nDAG16-MARKER-HISTORY-A\n\nRetrieve the exact historical configuration for candidate A's run from artifacts. Cite the manifest path and source identity."
+		},
+		{
+			"turn": 14,
+			"title": "Reconsider A",
+			"marker": "DAG16-MARKER-RECONSIDER-A",
+			"user": "# Scenario turn 14\n\nDAG16-MARKER-RECONSIDER-A\n\nReconsider candidate A. What would have to change to justify retesting it?"
+		},
+		{
+			"turn": 15,
+			"title": "Next action",
+			"marker": "DAG16-MARKER-NEXT-ACTION",
+			"user": "# Scenario turn 15\n\nDAG16-MARKER-NEXT-ACTION\n\nChoose the next action under the current constraints. Use the current baseline and ceiling."
+		},
+		{
+			"turn": 16,
+			"title": "Final",
+			"marker": "DAG16-MARKER-FINAL",
+			"user": "# Scenario turn 16\n\nDAG16-MARKER-FINAL\n\nProduce the final result and remaining plan with evidence. Do not invent a speedup or claim the task is complete if work remains. Persist notes/state.json."
+		}
+	]
+}

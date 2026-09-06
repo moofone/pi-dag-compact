@@ -1,0 +1,7 @@
+--- a/src/baseline.cu
++++ b/src/smem_aware_fusion.cu
+@@
++// Candidate E: smem-aware fusion, clocks locked.
++// Follows A's pipeline regression (reduce smem) and D's confound (lock clocks).
++// pipeline 10.8ms vs C's 11.1ms, smem 55% <= 64%, correctness pass.
+}

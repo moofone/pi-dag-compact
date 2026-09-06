@@ -1,0 +1,7 @@
+--- a/src/baseline.cu
++++ b/src/aggressive.cu
+@@
++// Candidate B: aggressive tiling. Fast on paper, fails numeric check.
++// smem ~90%, above later 64% ceiling and even the original 80% ceiling.
++// correctness: fail (ulp2_or_bitwise)
+}

@@ -1,0 +1,10 @@
+{
+	"schemaVersion": 1,
+	"variant": "v1",
+	"arm": "classic",
+	"label": "accelerated compaction test",
+	"keepRecentTokens": 1536,
+	"reserveTokens": 4096,
+	"cutAfterTurns": [4, 8, 12],
+	"modelConfig": "faux/faux-1"
+}

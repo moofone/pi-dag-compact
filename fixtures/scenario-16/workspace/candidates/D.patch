@@ -1,0 +1,6 @@
+--- a/src/baseline.cu
++++ b/src/unlocked.cu
+@@
++// Candidate D: fusion retry with clocks unlocked and host contention.
++// Measurement is confounded. Do not treat as accepted evidence.
+}

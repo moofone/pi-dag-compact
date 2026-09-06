@@ -1,0 +1,34 @@
+name: Feature request
+description: Propose a change that fits the evaluation contract.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This repository is staged. M0 is the classic-compaction baseline.
+        Graphology/SQLite working memory is M1. Explicit DAG handoff is M2.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+    validations:
+      required: true
+  - type: dropdown
+    id: milestone
+    attributes:
+      label: Milestone
+      options:
+        - M0 fixture / classic baseline
+        - M1 record-only extension
+        - M2 explicit handoff and A/B
+        - M3 real pilot
+        - Unsure
+    validations:
+      required: true

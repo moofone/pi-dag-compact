@@ -1,0 +1,70 @@
+Synthetic pipeline notes for workload W1
+======================================
+
+These notes exist so the accelerated compaction test carries realistic
+source-and-measurement identity into context. They are not CUDA results.
+
+Complete-pipeline metric
+------------------------
+The objective is pipeline_p50_ms over preprocess, gemm, epilogue, and
+postprocess. Kernel-only p50 is recorded for diagnosis. A kernel that
+improves while the pipeline regresses is a rejection for this workload.
+
+Baseline identity
+-----------------
+commit deadbeef0001
+source src/baseline.cu
+two launches: gemm_kernel then epilogue_kernel
+shared memory near 40%
+numeric check ulp2_or_bitwise
+warmup 10, samples 50
+workload dimensions M=N=K=4096 seed 7
+
+Candidate A — fused epilogue
+----------------------------
+Hypothesis H17: fusion should reduce launch overhead.
+Observed pattern in the fixture: kernel p50 falls, pipeline p50 rises,
+shared memory near 72%. Correctness still passes. Rejection reason is
+pipeline_regression, not a correctness failure.
+
+Candidate B — aggressive tiling
+-------------------------------
+Fast kernel and fast pipeline in the fixture, correctness fail, shared
+memory near 90%. Never an accepted baseline. Later ceiling 64% would
+also exclude it.
+
+Candidate C — occupancy-preserving schedule
+-------------------------------------------
+Pipeline better than baseline, shared memory 50%, correctness pass.
+Eligible to become the accepted baseline after the ceiling tightens.
+
+Candidate D — unlocked clocks
+-----------------------------
+Apparent gain with clocks_unlocked_and_host_contention. Inconclusive.
+Do not treat as accepted evidence. Do not update the baseline.
+
+Candidate E — smem-aware fusion, clocks locked
+----------------------------------------------
+Follow-up that addresses A's resource pressure and D's confound.
+Pipeline better than C, shared memory 55% which is under 64%,
+correctness pass.
+
+Operational rules
+-----------------
+1. Persist intent before a run and a terminal record after.
+2. Repeating A or B requires a new justification linked to the prior record.
+3. Compare compatible workloads and the same metric definition.
+4. Do not add independent stage percentiles to infer an end-to-end percentile.
+5. Write notes/state.json when baseline, ceiling, or rejections change.
+
+Environment (synthetic)
+-----------------------
+gpu synth-gpu-0
+driver synthetic-driver-0
+host eval-host
+clocks locked unless a candidate says otherwise
+
+This excerpt is long enough that reading it during several turns pushes
+older user turns out of a 1,536-token retained tail without dummy
+padding. Each paragraph is part of the metric contract or candidate
+identity the oracle later checks.

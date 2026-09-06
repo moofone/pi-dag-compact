@@ -1,0 +1,6 @@
+--- a/src/baseline.cu
++++ b/src/conservative.cu
+@@
++// Candidate C: occupancy-preserving schedule. Kernel slightly slower
++// than A, complete pipeline better than baseline, smem 50%, correctness pass.
+}

@@ -1,0 +1,104 @@
+{
+	"schemaVersion": 1,
+	"synthetic": true,
+	"disclaimer": "Synthetic observations. Not measured CUDA results.",
+	"workload": {
+		"id": "W1",
+		"path": "workloads/w1.json",
+		"dimensions": "M=4096,N=4096,K=4096",
+		"seed": 7
+	},
+	"environment": {
+		"gpu": "synth-gpu-0",
+		"driver": "synthetic-driver-0",
+		"host": "eval-host",
+		"clocksLockedDefault": true
+	},
+	"candidates": {
+		"baseline": {
+			"question": "Establish the complete-pipeline baseline for W1.",
+			"commit": "deadbeef0001",
+			"patchPath": "src/baseline.cu",
+			"pipelineP50Ms": 12.4,
+			"kernelP50Ms": 3.1,
+			"smemPct": 40,
+			"correctness": {
+				"check": "ulp2_or_bitwise",
+				"outcome": "pass",
+				"evidence": "runs/run-baseline-W1/correctness.txt"
+			},
+			"clocksLocked": true
+		},
+		"A": {
+			"question": "H17: fusion should reduce launch overhead for W1.",
+			"commit": "deadbeef0001",
+			"patchPath": "candidates/A.patch",
+			"pipelineP50Ms": 13.8,
+			"kernelP50Ms": 2.1,
+			"smemPct": 72,
+			"correctness": {
+				"check": "ulp2_or_bitwise",
+				"outcome": "pass",
+				"evidence": "runs/run-A-W1/correctness.txt"
+			},
+			"clocksLocked": true
+		},
+		"B": {
+			"question": "Aggressive shared-memory tiling for W1.",
+			"commit": "deadbeef0001",
+			"patchPath": "candidates/B.patch",
+			"pipelineP50Ms": 10.2,
+			"kernelP50Ms": 1.8,
+			"smemPct": 90,
+			"correctness": {
+				"check": "ulp2_or_bitwise",
+				"outcome": "fail",
+				"evidence": "runs/run-B-W1/correctness.txt"
+			},
+			"clocksLocked": true
+		},
+		"C": {
+			"question": "Conservative occupancy-preserving schedule for W1.",
+			"commit": "deadbeef0001",
+			"patchPath": "candidates/C.patch",
+			"pipelineP50Ms": 11.1,
+			"kernelP50Ms": 2.8,
+			"smemPct": 50,
+			"correctness": {
+				"check": "ulp2_or_bitwise",
+				"outcome": "pass",
+				"evidence": "runs/run-C-W1/correctness.txt"
+			},
+			"clocksLocked": true
+		},
+		"D": {
+			"question": "Retry fusion under unlocked clocks.",
+			"commit": "deadbeef0001",
+			"patchPath": "candidates/D.patch",
+			"pipelineP50Ms": 9.4,
+			"kernelP50Ms": 1.9,
+			"smemPct": 60,
+			"correctness": {
+				"check": "ulp2_or_bitwise",
+				"outcome": "pass",
+				"evidence": "runs/run-D-W1/correctness.txt"
+			},
+			"clocksLocked": false,
+			"confound": "clocks_unlocked_and_host_contention"
+		},
+		"E": {
+			"question": "Smem-aware fusion with clocks locked, following A's pipeline regression and D's confound.",
+			"commit": "deadbeef0001",
+			"patchPath": "candidates/E.patch",
+			"pipelineP50Ms": 10.8,
+			"kernelP50Ms": 2.6,
+			"smemPct": 55,
+			"correctness": {
+				"check": "ulp2_or_bitwise",
+				"outcome": "pass",
+				"evidence": "runs/run-E-W1/correctness.txt"
+			},
+			"clocksLocked": true
+		}
+	}
+}

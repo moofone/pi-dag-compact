@@ -1,0 +1,17 @@
+--- a/src/baseline.cu
++++ b/src/fused.cu
+@@
+-// Separate launch for epilogue. This is the baseline's launch overhead.
++// Candidate A: fuse epilogue into gemm. Kernel gets faster; pipeline
++// regresses on this workload because of extra shared-memory pressure
++// and occupancy collapse in the complete pipeline.
+ __global__ void gemm_kernel(...) {
+-	__shared__ float tile_a[BLOCK_M * BLOCK_K];
+-	__shared__ float tile_b[BLOCK_K * BLOCK_N];
++	__shared__ float tile_a[BLOCK_M * BLOCK_K];
++	__shared__ float tile_b[BLOCK_K * BLOCK_N];
++	__shared__ float extra[BLOCK_M * BLOCK_N];
+@@
+-__global__ void epilogue_kernel(...) { ... }
++// epilogue inlined; extra smem ~72%
+}
