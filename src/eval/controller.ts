@@ -1,7 +1,7 @@
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { CutRecord, RunTotals } from "../schema/report.ts";
-import { assessCut, droppedAndRetained, serializeMessages } from "./cuts.ts";
+import { assessCut, droppedAndRetained, latestCompaction, serializeMessages } from "./cuts.ts";
 import { createClassicHarness } from "./harness.ts";
 import { loadEvalConfig, loadOracle, loadScenario } from "./load.ts";
 import { addScores, emptyScore, type ScoreResult, scoreExpectedState } from "./oracle.ts";
@@ -19,34 +19,63 @@ export interface ClassicRunResult {
 
 function dirSize(path: string): number {
 	let total = 0;
-	for (const entry of readdirSync(path, { withFileTypes: true })) {
-		const full = join(path, entry.name);
-		if (entry.isDirectory()) total += dirSize(full);
-		else total += statSync(full).size;
+	try {
+		for (const entry of readdirSync(path, { withFileTypes: true })) {
+			const full = join(path, entry.name);
+			if (entry.isDirectory()) total += dirSize(full);
+			else total += statSync(full).size;
+		}
+	} catch {
+		return total;
 	}
 	return total;
 }
 
+function compactionSource(details: unknown): string | undefined {
+	if (!details || typeof details !== "object") return undefined;
+	const source = (details as { source?: unknown }).source;
+	return typeof source === "string" ? source : undefined;
+}
+
 export async function runClassicScenario(
-	options: { outDir?: string; keepWorkspace?: boolean } = {},
+	options: {
+		outDir?: string;
+		keepWorkspace?: boolean;
+		arm?: "classic" | "dag";
+		variant?: string;
+	} = {},
 ): Promise<ClassicRunResult> {
+	const arm = options.arm ?? "classic";
 	const scenario = loadScenario();
 	const config = loadEvalConfig();
 	const oracle = loadOracle();
 	const workspace = createIsolatedWorkspace(options.outDir);
 	const started = Date.now();
-	const harness = await createClassicHarness(workspace, config);
+	const harness = await createClassicHarness(workspace, config, { dag: arm === "dag" });
 	const cuts: CutRecord[] = [];
 	let score = emptyScore();
 	const scoreByTurn: Array<{ afterTurn: number } & ScoreResult> = [];
 	let compactionAttempts = 0;
+	let fallbacks = 0;
 	const summaryUsage = emptyUsage();
-	let pendingProbe: { cutIndex: number } | undefined;
+	let pendingProbe:
+		| {
+				cutIndex: number;
+				afterTurn: number;
+				tokensBefore: number;
+				firstKeptEntryId: string;
+				summary: string;
+				droppedEntryCount: number;
+				retainedEntryCount: number;
+				preCutContextText: string;
+				postCutContextText: string;
+		  }
+		| undefined;
 
-	const finalizePendingProbe = (label: string): void => {
+	const finalizePendingProbe = (label: string, nextTurnRequestText?: string): void => {
 		if (!pendingProbe) return;
-		const cut = cuts[pendingProbe.cutIndex];
-		if (!cut) throw new Error(`missing cut for probe after ${label}`);
+		const cut = assessCut({ ...pendingProbe, nextTurnRequestText });
+		cuts[pendingProbe.cutIndex] = cut;
 		if (cut.noop) {
 			throw new Error(
 				`No-op compaction after turn ${cut.afterTurn} (${label}): dropped=${cut.droppedEntryCount} tokensBefore=${cut.tokensBefore}`,
@@ -57,8 +86,12 @@ export async function runClassicScenario(
 
 	try {
 		for (const turn of scenario.turns) {
+			const captureLen = harness.captures.length;
 			await harness.session.prompt(turn.user);
-			finalizePendingProbe(`turn ${turn.turn}`);
+			const nextTurnCapture = harness.captures
+				.slice(captureLen)
+				.find((capture) => capture.kind === "turn");
+			finalizePendingProbe(`turn ${turn.turn}`, nextTurnCapture?.serialized);
 
 			const expected = oracle.states.find((state) => state.afterTurn === turn.turn);
 			if (expected) {
@@ -71,28 +104,49 @@ export async function runClassicScenario(
 
 			compactionAttempts += 1;
 			const preCutContextText = serializeMessages(harness.session.messages);
-			let result: Awaited<ReturnType<typeof harness.session.compact>>;
-			try {
-				result = await harness.session.compact();
-			} catch (error) {
-				const messages = harness.session.messages;
-				const preview = serializeMessages(messages).slice(0, 2000);
+			const compactionCountBefore = harness.sessionManager
+				.getBranch()
+				.filter((entry) => entry.type === "compaction").length;
+			if (arm === "dag") {
+				await harness.session.prompt("/dag-handoff");
+			} else {
+				try {
+					await harness.session.compact();
+				} catch (error) {
+					const messages = harness.session.messages;
+					const preview = serializeMessages(messages).slice(0, 2000);
+					throw new Error(
+						`compact failed after turn ${turn.turn}: ${error instanceof Error ? error.message : String(error)}; messages=${messages.length} providerCalls=${harness.faux.state.callCount} preview=${preview}`,
+					);
+				}
+			}
+			const compactionCountAfter = harness.sessionManager
+				.getBranch()
+				.filter((entry) => entry.type === "compaction").length;
+			if (compactionCountAfter !== compactionCountBefore + 1) {
 				throw new Error(
-					`compact failed after turn ${turn.turn}: ${error instanceof Error ? error.message : String(error)}; messages=${messages.length} providerCalls=${harness.faux.state.callCount} preview=${preview}`,
+					`expected one new compaction after turn ${turn.turn}, before=${compactionCountBefore} after=${compactionCountAfter}`,
 				);
+			}
+			const compaction = latestCompaction(harness.sessionManager);
+			if (!compaction) {
+				throw new Error(`no compaction entry after turn ${turn.turn}`);
+			}
+			if (arm === "dag" && compactionSource(compaction.details) !== "dag-handoff") {
+				fallbacks += 1;
 			}
 			const { droppedEntryCount, retainedEntryCount } = droppedAndRetained(
 				harness.sessionManager,
-				result.firstKeptEntryId,
+				compaction.firstKeptEntryId,
 			);
 			const postCutContextText = serializeMessages(harness.session.messages);
-			if (result.usage) {
+			if (compaction.usage) {
 				addUsage(summaryUsage, {
-					input: result.usage.input,
-					output: result.usage.output,
-					cacheRead: result.usage.cacheRead,
-					cacheWrite: result.usage.cacheWrite,
-					reasoning: result.usage.reasoning ?? 0,
+					input: compaction.usage.input,
+					output: compaction.usage.output,
+					cacheRead: compaction.usage.cacheRead,
+					cacheWrite: compaction.usage.cacheWrite,
+					reasoning: compaction.usage.reasoning ?? 0,
 					calls: 1,
 				});
 			}
@@ -100,16 +154,26 @@ export async function runClassicScenario(
 			cuts.push(
 				assessCut({
 					afterTurn: turn.turn,
-					tokensBefore: result.tokensBefore,
-					firstKeptEntryId: result.firstKeptEntryId,
-					summary: result.summary,
+					tokensBefore: compaction.tokensBefore,
+					firstKeptEntryId: compaction.firstKeptEntryId,
+					summary: compaction.summary,
 					droppedEntryCount,
 					retainedEntryCount,
 					preCutContextText,
 					postCutContextText,
 				}),
 			);
-			pendingProbe = { cutIndex: cuts.length - 1 };
+			pendingProbe = {
+				cutIndex: cuts.length - 1,
+				afterTurn: turn.turn,
+				tokensBefore: compaction.tokensBefore,
+				firstKeptEntryId: compaction.firstKeptEntryId,
+				summary: compaction.summary,
+				droppedEntryCount,
+				retainedEntryCount,
+				preCutContextText,
+				postCutContextText,
+			};
 		}
 		finalizePendingProbe("end of scenario");
 
@@ -118,15 +182,19 @@ export async function runClassicScenario(
 		}
 
 		const messageUsage = collectMessageUsage(harness.session.messages);
+		const metadataBytes =
+			dirSize(workspace.sessionDir) +
+			dirSize(join(workspace.cwd, "notes")) +
+			dirSize(join(workspace.cwd, "research-task"));
 		const totals: RunTotals = {
-			arm: "classic",
-			variant: config.variant,
+			arm,
+			variant: options.variant ?? config.variant,
 			modelConfig: config.modelConfig,
 			scenarioTurns: scenario.turns.length,
 			providerCalls: harness.faux.state.callCount,
 			compactionAttempts,
 			actualCuts: cuts.filter((cut) => !cut.noop).length,
-			fallbacks: 0,
+			fallbacks,
 			inputTokens: messageUsage.input,
 			cachedInputTokens: messageUsage.cacheRead,
 			outputTokens: messageUsage.output,
@@ -141,7 +209,7 @@ export async function runClassicScenario(
 			taskElapsedMs: Date.now() - started,
 			recoveryElapsedMs: 0,
 			peakRssBytes: harness.peakRssBytes(),
-			metadataBytes: dirSize(workspace.sessionDir) + dirSize(join(workspace.cwd, "notes")),
+			metadataBytes,
 		};
 
 		writeClassicReport({

@@ -47,9 +47,10 @@ edges, 128 KiB serialized, whichever comes first.
 ## Handoff (M2)
 
 `/compact`, threshold compaction, and overflow recovery stay classic during
-the MVP. `/dag-handoff` is explicit and is refused unless a reviewed
-checkpoint, persisted Pi reference, and provider-valid post-cut message
-sequence all succeed.
+the MVP. `/dag-handoff` is explicit: it arms a reviewed checkpoint, appends a
+`dag_handoff_marker`, and supplies the working-set card as compaction content.
+A stale review falls back to classic. A failed extension compaction append
+fences further handoffs and agent input until repair.
 
 ## Stages
 

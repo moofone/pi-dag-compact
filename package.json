@@ -1,7 +1,7 @@
 {
 	"name": "pi-dag-compact",
-	"version": "0.2.0",
-	"description": "Pi extension for bounded working memory and durable research evidence, with a scripted classic-compaction evaluation harness.",
+	"version": "0.3.0",
+	"description": "Pi extension for bounded working memory, durable research evidence, and opt-in DAG handoff, with a scripted compaction evaluation harness.",
 	"author": "Greg Tiller",
 	"license": "MIT",
 	"type": "module",
@@ -46,6 +46,7 @@
 		"test:unit": "node --experimental-strip-types --test test/unit/*.test.ts",
 		"test:integration": "node --experimental-strip-types --test --test-timeout=120000 test/integration/*.test.ts",
 		"eval:classic": "node --experimental-strip-types src/eval/run-classic.ts",
+		"eval:ab": "node --experimental-strip-types src/eval/run-ab.ts",
 		"pack:dry": "npm pack --dry-run",
 		"check": "npm run typecheck && npm run lint && npm test && npm run pack:dry"
 	},

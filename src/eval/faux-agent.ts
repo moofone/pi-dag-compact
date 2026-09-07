@@ -1,5 +1,6 @@
 import type { AssistantMessage, Context, Message } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import { batchFromNotes } from "./graph-sync.ts";
 import { formatClassicSummary, notesAfterTurn } from "./notes.ts";
 
 interface ToolStep {
@@ -54,7 +55,7 @@ function toolResultsSinceLastUser(context: Context): number {
 	return count;
 }
 
-function toolsForTurn(turn: number): ToolStep[] {
+function toolsForTurn(turn: number, dag: boolean): ToolStep[] {
 	const writeNotes = {
 		name: "write",
 		args: {
@@ -68,76 +69,89 @@ function toolsForTurn(turn: number): ToolStep[] {
 	});
 	const read = (path: string): ToolStep => ({ name: "read", args: { path } });
 
-	switch (turn) {
-		case 1:
-			return [read("README.md"), read("experiments.json"), writeNotes];
-		case 2:
-			return [
-				run("baseline"),
-				read("runs/run-baseline-W1/result.json"),
-				read("src/baseline.cu"),
-				read("src/pipeline_notes.txt"),
-				writeNotes,
-			];
-		case 3:
-			return [
-				run("A"),
-				read("runs/run-A-W1/result.json"),
-				read("candidates/A.patch"),
-				read("src/pipeline_notes.txt"),
-				writeNotes,
-			];
-		case 4:
-			return [writeNotes];
-		case 5:
-			return [writeNotes];
-		case 6:
-			return [
-				run("B"),
-				read("runs/run-B-W1/result.json"),
-				read("src/pipeline_notes.txt"),
-				writeNotes,
-			];
-		case 7:
-			return [
-				run("C"),
-				read("runs/run-C-W1/result.json"),
-				read("candidates/C.patch"),
-				read("src/pipeline_notes.txt"),
-				writeNotes,
-			];
-		case 8:
-			return [read("src/pipeline_notes.txt"), writeNotes];
-		case 9:
-			return [
-				run("D"),
-				read("runs/run-D-W1/result.json"),
-				read("src/pipeline_notes.txt"),
-				writeNotes,
-			];
-		case 10:
-			return [writeNotes];
-		case 11:
-			return [
-				run("E"),
-				read("runs/run-E-W1/result.json"),
-				read("candidates/E.patch"),
-				read("src/pipeline_notes.txt"),
-				writeNotes,
-			];
-		case 12:
-			return [read("src/pipeline_notes.txt"), writeNotes];
-		case 13:
-			return [read("runs/run-A-W1/manifest.json"), read("candidates/A.patch")];
-		case 14:
-			return [writeNotes];
-		case 15:
-			return [writeNotes];
-		case 16:
-			return [writeNotes];
-		default:
-			return [];
-	}
+	const tools = (() => {
+		switch (turn) {
+			case 1:
+				return [read("README.md"), read("experiments.json"), writeNotes];
+			case 2:
+				return [
+					run("baseline"),
+					read("runs/run-baseline-W1/result.json"),
+					read("src/baseline.cu"),
+					read("src/pipeline_notes.txt"),
+					writeNotes,
+				];
+			case 3:
+				return [
+					run("A"),
+					read("runs/run-A-W1/result.json"),
+					read("candidates/A.patch"),
+					read("src/pipeline_notes.txt"),
+					writeNotes,
+				];
+			case 4:
+				return [writeNotes];
+			case 5:
+				return [writeNotes];
+			case 6:
+				return [
+					run("B"),
+					read("runs/run-B-W1/result.json"),
+					read("src/pipeline_notes.txt"),
+					writeNotes,
+				];
+			case 7:
+				return [
+					run("C"),
+					read("runs/run-C-W1/result.json"),
+					read("candidates/C.patch"),
+					read("src/pipeline_notes.txt"),
+					writeNotes,
+				];
+			case 8:
+				return [read("src/pipeline_notes.txt"), writeNotes];
+			case 9:
+				return [
+					run("D"),
+					read("runs/run-D-W1/result.json"),
+					read("src/pipeline_notes.txt"),
+					writeNotes,
+				];
+			case 10:
+				return [writeNotes];
+			case 11:
+				return [
+					run("E"),
+					read("runs/run-E-W1/result.json"),
+					read("candidates/E.patch"),
+					read("src/pipeline_notes.txt"),
+					writeNotes,
+				];
+			case 12:
+				return [read("src/pipeline_notes.txt"), writeNotes];
+			case 13:
+				return [read("runs/run-A-W1/manifest.json"), read("candidates/A.patch")];
+			case 14:
+				return [writeNotes];
+			case 15:
+				return [writeNotes];
+			case 16:
+				return [writeNotes];
+			default:
+				return [];
+		}
+	})();
+	if (!dag) return tools;
+	return [
+		...tools,
+		{
+			name: "dag_update",
+			args: batchFromNotes(notesAfterTurn(turn), `turn-${turn}`) as unknown as Record<
+				string,
+				unknown
+			>,
+		},
+	];
 }
 
 function finalForTurn(turn: number): string {
@@ -152,9 +166,11 @@ function finalForTurn(turn: number): string {
 	].join("\n");
 }
 
-export function createFauxResponseFactory(latestTurn: {
-	current: number;
-}): (context: Context) => AssistantMessage {
+export function createFauxResponseFactory(
+	latestTurn: { current: number },
+	options: { dag?: boolean } = {},
+): (context: Context) => AssistantMessage {
+	const dag = options.dag === true;
 	return (context) => {
 		if (isCompactionPrompt(context)) {
 			return fauxAssistantMessage(formatClassicSummary(notesAfterTurn(latestTurn.current)));
@@ -164,7 +180,7 @@ export function createFauxResponseFactory(latestTurn: {
 			return fauxAssistantMessage("Unexpected prompt outside the scenario controller.");
 		}
 		latestTurn.current = turn;
-		const tools = toolsForTurn(turn);
+		const tools = toolsForTurn(turn, dag);
 		const done = toolResultsSinceLastUser(context);
 		const next = tools[done];
 		if (next) {

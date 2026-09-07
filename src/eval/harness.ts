@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type FauxProviderHandle, fauxProvider } from "@earendil-works/pi-ai";
 import {
@@ -10,6 +10,7 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import piDagCompact from "../index.ts";
 import type { EvalConfig } from "../schema/scenario.ts";
 import { createFauxResponseFactory } from "./faux-agent.ts";
 import type { IsolatedWorkspace } from "./workspace.ts";
@@ -40,8 +41,19 @@ function serializePayload(payload: unknown): string {
 export async function createClassicHarness(
 	workspace: IsolatedWorkspace,
 	config: EvalConfig,
+	options: { extraExtensions?: InlineExtension[]; dag?: boolean } = {},
 ): Promise<ClassicHarness> {
 	writeFileSync(join(workspace.agentDir, "auth.json"), "{}\n");
+	const dag = options.dag === true;
+	if (dag) {
+		const taskDir = join(workspace.cwd, "research-task");
+		mkdirSync(join(workspace.cwd, ".pi"), { recursive: true });
+		mkdirSync(taskDir, { recursive: true });
+		writeFileSync(
+			join(workspace.cwd, ".pi", "pi-dag-compact.json"),
+			`${JSON.stringify({ mode: "explicit-handoff", taskDir }, null, "\t")}\n`,
+		);
+	}
 
 	const faux = fauxProvider({
 		provider: "faux",
@@ -60,7 +72,7 @@ export async function createClassicHarness(
 		],
 	});
 	const latestTurn = { current: 1 };
-	const factory = createFauxResponseFactory(latestTurn);
+	const factory = createFauxResponseFactory(latestTurn, { dag });
 	faux.setResponses(Array.from({ length: 256 }, () => factory));
 
 	const model = faux.getModel();
@@ -106,7 +118,11 @@ export async function createClassicHarness(
 		cwd: workspace.cwd,
 		agentDir: workspace.agentDir,
 		settingsManager,
-		extensionFactories: [captureExtension],
+		extensionFactories: [
+			captureExtension,
+			...(dag ? [piDagCompact] : []),
+			...(options.extraExtensions ?? []),
+		],
 		noSkills: true,
 		noPromptTemplates: true,
 		noThemes: true,
@@ -123,7 +139,18 @@ export async function createClassicHarness(
 		thinkingLevel: "off",
 		modelRuntime,
 		resourceLoader,
-		tools: ["read", "bash", "edit", "write"],
+		tools: dag
+			? [
+					"read",
+					"bash",
+					"edit",
+					"write",
+					"dag_update",
+					"dag_query",
+					"session_read",
+					"dag_ingest_run",
+				]
+			: ["read", "bash", "edit", "write"],
 		sessionManager,
 		settingsManager,
 	});

@@ -11,5 +11,11 @@ export function ingestRun(
 	const dir = join(workspace, "runs", runId);
 	const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as unknown;
 	const result = JSON.parse(readFileSync(join(dir, "result.json"), "utf8")) as unknown;
-	return engine.recordResearchEvent(operationId, "experiment_run", { runId, manifest, result });
+	const recordId = engine.recordResearchEvent(operationId, "experiment_run", {
+		runId,
+		manifest,
+		result,
+	});
+	engine.finishRun(runId, "completed", { runId, manifest, result, recordId });
+	return recordId;
 }

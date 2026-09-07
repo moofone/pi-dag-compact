@@ -2,16 +2,19 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { MemoryEngine } from "../memory/engine.ts";
 import { DagError } from "../memory/errors.ts";
 import { resolveConfig } from "./config.ts";
+import { HandoffController } from "./handoff.ts";
 import { collectPiRefs } from "./session.ts";
 
 export interface ExtensionRuntime {
 	engine: MemoryEngine | undefined;
+	handoff: HandoffController;
 	ensureEngine(ctx: ExtensionContext): MemoryEngine;
 	shutdown(): void;
 }
 
 export function createRuntime(pi: ExtensionAPI): ExtensionRuntime {
 	let engine: MemoryEngine | undefined;
+	const handoff = new HandoffController();
 
 	const shutdown = (): void => {
 		engine?.close();
@@ -52,6 +55,7 @@ export function createRuntime(pi: ExtensionAPI): ExtensionRuntime {
 		get engine() {
 			return engine;
 		},
+		handoff,
 		ensureEngine(ctx) {
 			if (engine) return engine;
 			const config = resolveConfig(ctx.cwd);

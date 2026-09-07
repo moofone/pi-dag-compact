@@ -1,7 +1,8 @@
-# Evaluation contract (M0)
+# Evaluation contract (M0–M2)
 
 This is an **accelerated compaction test**. It is not an estimate of savings
-under Pi's default retained-tail budget.
+under Pi's default retained-tail budget. Faux A/B is plumbing, not a
+live-model value claim.
 
 ## Scenario
 
@@ -37,7 +38,7 @@ Synthetic numbers in the fixture are not CUDA results.
 | Arm | Behavior |
 |---|---|
 | A — classic | Ordinary Pi compaction at the scheduled boundaries |
-| B — DAG | Not in M0 |
+| B — DAG | Real extension in `explicit-handoff`; `/dag-handoff` at the same boundaries |
 
 Arm A keeps read/write/bash. Do not disable useful baseline note-taking.
 Neither arm may see the oracle answer key.

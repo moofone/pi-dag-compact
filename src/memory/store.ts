@@ -85,6 +85,14 @@ CREATE TABLE IF NOT EXISTS attachments (
   inherited_revision_id TEXT,
   created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS experiment_runs (
+  run_id TEXT PRIMARY KEY,
+  operation_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 `;
 
 export class SqliteStore {
@@ -304,6 +312,40 @@ export class SqliteStore {
 				"INSERT INTO attachments (attachment_id, session_id, origin_session_id, inherited_revision_id, created_at) VALUES (?, ?, ?, ?, ?)",
 			)
 			.run(attachmentId, sessionId, originSessionId, inheritedRevisionId, Date.now());
+	}
+
+	getRun(
+		runId: string,
+	): { runId: string; operationId: string; status: string; payloadJson: string } | undefined {
+		const row = this.db
+			.prepare(
+				"SELECT run_id, operation_id, status, payload_json FROM experiment_runs WHERE run_id = ?",
+			)
+			.get(runId) as
+			| { run_id: string; operation_id: string; status: string; payload_json: string }
+			| undefined;
+		if (!row) return undefined;
+		return {
+			runId: row.run_id,
+			operationId: row.operation_id,
+			status: row.status,
+			payloadJson: row.payload_json,
+		};
+	}
+
+	putRun(runId: string, operationId: string, status: string, payloadJson: string): void {
+		const now = Date.now();
+		this.db
+			.prepare(
+				`INSERT INTO experiment_runs (run_id, operation_id, status, payload_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(run_id) DO UPDATE SET
+           operation_id = excluded.operation_id,
+           status = excluded.status,
+           payload_json = excluded.payload_json,
+           updated_at = excluded.updated_at`,
+			)
+			.run(runId, operationId, status, payloadJson, now, now);
 	}
 
 	private mapRevision(row: Record<string, unknown> | undefined): RevisionRow | undefined {

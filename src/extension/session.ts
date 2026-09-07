@@ -42,3 +42,31 @@ export function findCopiedEntry(
 ): SessionEntry | undefined {
 	return sessionManager.getBranch().find((entry) => entry.id === entryId);
 }
+
+export type SessionEvidence =
+	| { entry: SessionEntry }
+	| { unavailable: true; reason: "missing_entry" | "uncopied_foreign_entry" };
+
+export function resolveSessionEvidence(
+	sessionManager: {
+		getSessionId(): string;
+		getBranch(): readonly SessionEntry[];
+		getEntry(id: string): SessionEntry | undefined;
+	},
+	sessionId: string,
+	entryId: string,
+): SessionEvidence {
+	const current = sessionManager.getSessionId();
+	if (sessionId === current) {
+		const entry =
+			sessionManager.getEntry(entryId) ??
+			sessionManager.getBranch().find((item) => item.id === entryId);
+		if (!entry) return { unavailable: true, reason: "missing_entry" };
+		return { entry };
+	}
+	const copied =
+		sessionManager.getBranch().find((item) => item.id === entryId) ??
+		sessionManager.getEntry(entryId);
+	if (!copied) return { unavailable: true, reason: "uncopied_foreign_entry" };
+	return { entry: copied };
+}

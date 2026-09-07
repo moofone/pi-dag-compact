@@ -10,6 +10,7 @@ export const LIMITS = {
 	historyScanBytes: 4 * 1024 * 1024,
 	maxTitle: 120,
 	maxBody: 1000,
+	maxHandoffTokens: 1000,
 } as const;
 
 export function utf8Bytes(value: string): number {

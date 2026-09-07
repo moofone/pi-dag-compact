@@ -13,7 +13,7 @@ export const CutRecordSchema = Type.Object({
 });
 
 export const RunTotalsSchema = Type.Object({
-	arm: Type.Literal("classic"),
+	arm: Type.Union([Type.Literal("classic"), Type.Literal("dag")]),
 	variant: Type.String(),
 	modelConfig: Type.String(),
 	scenarioTurns: Type.Integer(),

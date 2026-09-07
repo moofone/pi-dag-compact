@@ -1,4 +1,4 @@
-import type { SessionManager } from "@earendil-works/pi-coding-agent";
+import type { CompactionEntry, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { CutRecord } from "../schema/report.ts";
 
 export function turnHeader(turn: number): string {
@@ -55,6 +55,15 @@ export function assessCut(options: {
 		rawDroppedTurnHeadersAbsentFromNextRequest: absentFromNext,
 		noop,
 	};
+}
+
+export function latestCompaction(sessionManager: SessionManager): CompactionEntry | undefined {
+	const branch = sessionManager.getBranch();
+	for (let index = branch.length - 1; index >= 0; index -= 1) {
+		const entry = branch[index];
+		if (entry?.type === "compaction") return entry as CompactionEntry;
+	}
+	return undefined;
 }
 
 export function droppedAndRetained(

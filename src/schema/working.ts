@@ -101,6 +101,15 @@ export const PiRefDataSchema = Type.Object({
 	checkpointId: Type.Optional(Type.String({ minLength: 1 })),
 });
 
+export const HandoffMarkerSchema = Type.Object({
+	v: Type.Literal(1),
+	sessionId: Type.String({ minLength: 1 }),
+	leafId: Type.String({ minLength: 1 }),
+	revisionId: Type.String({ minLength: 1 }),
+	checkpointId: Type.String({ minLength: 1 }),
+	coveredThroughEntryId: Type.String({ minLength: 1 }),
+});
+
 export type NodeKind = Static<typeof NodeKindSchema>;
 export type NodeStatus = Static<typeof NodeStatusSchema>;
 export type EdgeKind = Static<typeof EdgeKindSchema>;
@@ -111,3 +120,4 @@ export type WorkingEdge = Static<typeof WorkingEdgeSchema>;
 export type MutationBatch = Static<typeof MutationBatchSchema>;
 export type QueryRequest = Static<typeof QueryRequestSchema>;
 export type PiRefData = Static<typeof PiRefDataSchema>;
+export type HandoffMarker = Static<typeof HandoffMarkerSchema>;

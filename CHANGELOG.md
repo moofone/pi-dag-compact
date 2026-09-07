@@ -5,6 +5,29 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-09-06
+
+### Added
+
+- Explicit `/dag-handoff` in `explicit-handoff` mode. Manual compact stays
+  classic unless a fresh reviewed checkpoint is armed. Threshold and overflow
+  compaction stay classic.
+- Custom `dag_handoff_marker` as the post-cut suffix boundary. The card is the
+  compaction summary; the marker contributes no ordinary messages.
+- Failed-append fence: `session_compact_failed` with `fromExtension` blocks
+  further handoffs, agent input, and compaction until the session is repaired.
+  Stale review falls back to classic and is counted.
+- Experiment run registry: a started run cannot relaunch until it is
+  reconciled. Origin-qualified `session_read` resolves copied fork entries and
+  reports uncopied evidence as unavailable.
+- Faux A/B eval: DAG arm loads the real extension, calls `dag_update`, and
+  cuts through `/dag-handoff`. `npm run eval:ab` runs three variant pairs.
+
+### Notes
+
+- Faux plumbing is not a live-model value claim. Keep explicit-handoff opt-in.
+  Do not advertise token savings until live scored variants run.
+
 ## [0.2.0] - 2026-09-06
 
 ### Added

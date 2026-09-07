@@ -260,6 +260,28 @@ export class MemoryEngine {
 		this.store.insertAttachment(newId("att"), this.sessionId, originSessionId, inheritedRevisionId);
 	}
 
+	beginRun(runId: string, operationId: string, payload: unknown): void {
+		const existing = this.store.getRun(runId);
+		if (existing && (existing.status === "planned" || existing.status === "running")) {
+			throw new DagError(
+				"unreconciled_run",
+				`run ${runId} is ${existing.status}; reconcile before relaunch`,
+			);
+		}
+		this.store.putRun(runId, operationId, "running", JSON.stringify(payload));
+	}
+
+	finishRun(runId: string, status: "completed" | "failed" | "interrupted", payload: unknown): void {
+		const existing = this.store.getRun(runId);
+		this.store.putRun(runId, existing?.operationId ?? "reconcile", status, JSON.stringify(payload));
+	}
+
+	getRun(
+		runId: string,
+	): { runId: string; operationId: string; status: string; payloadJson: string } | undefined {
+		return this.store.getRun(runId);
+	}
+
 	archivedSearch(query: string, limit: number, cursor?: string): WorkingNode[] {
 		return this.store.searchArchived(query, limit, cursor);
 	}

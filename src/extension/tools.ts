@@ -4,7 +4,9 @@ import { DagError } from "../memory/errors.ts";
 import { ingestRun } from "../memory/experiment.ts";
 import { queryWorkingSet } from "../memory/query.ts";
 import { MutationBatchSchema, QueryRequestSchema } from "../schema/working.ts";
+import { resolveConfig } from "./config.ts";
 import type { ExtensionRuntime } from "./runtime.ts";
+import { resolveSessionEvidence } from "./session.ts";
 
 function errorResult(error: unknown): {
 	content: [{ type: "text"; text: string }];
@@ -25,6 +27,12 @@ export function registerRecordTools(pi: ExtensionAPI, runtime: ExtensionRuntime)
 		parameters: MutationBatchSchema,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
+				if (resolveConfig(ctx.cwd).mode === "disabled") {
+					throw new DagError("disabled", "pi-dag-compact is disabled");
+				}
+				if (runtime.handoff.fenced) {
+					throw new DagError("handoff_fenced", runtime.handoff.fenced);
+				}
 				const engine = runtime.ensureEngine(ctx);
 				const result = engine.update(params, {
 					sessionId: ctx.sessionManager.getSessionId(),
@@ -84,30 +92,16 @@ export function registerRecordTools(pi: ExtensionAPI, runtime: ExtensionRuntime)
 			entryId: Type.String({ minLength: 1 }),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const current = ctx.sessionManager.getSessionId();
-			if (params.sessionId !== current) {
+			const resolved = resolveSessionEvidence(ctx.sessionManager, params.sessionId, params.entryId);
+			if ("unavailable" in resolved) {
 				return {
-					content: [
-						{
-							type: "text",
-							text: JSON.stringify({ unavailable: true, reason: "foreign_session" }),
-						},
-					],
-					details: { unavailable: true },
-				};
-			}
-			const entry = ctx.sessionManager.getBranch().find((item) => item.id === params.entryId);
-			if (!entry) {
-				return {
-					content: [
-						{ type: "text", text: JSON.stringify({ unavailable: true, reason: "missing_entry" }) },
-					],
-					details: { unavailable: true },
+					content: [{ type: "text", text: JSON.stringify(resolved) }],
+					details: { unavailable: true, reason: resolved.reason },
 				};
 			}
 			return {
-				content: [{ type: "text", text: JSON.stringify(entry) }],
-				details: { id: entry.id },
+				content: [{ type: "text", text: JSON.stringify(resolved.entry) }],
+				details: { id: resolved.entry.id },
 			};
 		},
 	});

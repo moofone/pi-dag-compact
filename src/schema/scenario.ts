@@ -16,7 +16,7 @@ export const ScenarioTurnSchema = Type.Object({
 export const EvalConfigSchema = Type.Object({
 	schemaVersion: Type.Literal(1),
 	variant: Type.String({ minLength: 1 }),
-	arm: Type.Literal("classic"),
+	arm: Type.Optional(Type.Union([Type.Literal("classic"), Type.Literal("dag")])),
 	label: Type.String({ minLength: 1 }),
 	keepRecentTokens: Type.Integer({ minimum: 1024, maximum: 2048 }),
 	reserveTokens: Type.Integer({ minimum: 1 }),

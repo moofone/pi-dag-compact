@@ -93,6 +93,7 @@ export function dagStatus(engine: MemoryEngine): {
 	acceptedBaseline: WorkingNode[];
 	currentWork: WorkingNode[];
 	blockers: WorkingNode[];
+	unresolved: WorkingNode[];
 	nextAction: WorkingNode[];
 	rejected: WorkingNode[];
 	revisionId: string | null;
@@ -103,6 +104,8 @@ export function dagStatus(engine: MemoryEngine): {
 	);
 	const open = (kind: WorkingNode["kind"]) =>
 		nodes.filter((node) => node.kind === kind && node.status === "open");
+	const blockers = [...open("blocker"), ...nodes.filter((node) => node.status === "blocked")];
+	const blockerIds = new Set(blockers.map((node) => node.id));
 	return {
 		objective: nodes.filter((node) => node.kind === "goal"),
 		constraints: nodes.filter((node) => node.kind === "constraint"),
@@ -110,8 +113,9 @@ export function dagStatus(engine: MemoryEngine): {
 			(node) => node.kind === "decision" && node.status === "done" && /baseline/i.test(node.title),
 		),
 		currentWork: [...open("task"), ...open("hypothesis")],
-		blockers: open("blocker"),
-		nextAction: open("task").filter((node) => !blocked.has(node.id)),
+		blockers,
+		unresolved: blockers,
+		nextAction: open("task").filter((node) => !blocked.has(node.id) && !blockerIds.has(node.id)),
 		rejected: nodes.filter((node) => node.status === "rejected"),
 		revisionId,
 	};

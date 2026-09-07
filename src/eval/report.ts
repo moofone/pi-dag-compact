@@ -23,10 +23,10 @@ export function writeClassicReport(options: {
 	writeFileSync(
 		join(options.outDir, "REPORT.md"),
 		[
-			"# Classic compaction baseline (M0)",
+			`# ${options.totals.arm} arm (${options.totals.variant})`,
 			"",
 			"Accelerated compaction test. Not a production savings estimate.",
-			"Synthetic fixture. Not a CUDA result.",
+			"Faux provider. Not a live-model value claim. Synthetic fixture. Not a CUDA result.",
 			"",
 			"## Totals",
 			"",
