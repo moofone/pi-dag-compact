@@ -69,6 +69,41 @@ export const WorkingEdgeSchema = Type.Object({
 	kind: EdgeKindSchema,
 });
 
+export const GoalBindingSchema = Type.Object({
+	goalId: Type.String({ minLength: 1 }),
+	stageId: Type.String({ minLength: 1 }),
+	generation: Type.Integer({ minimum: 0 }),
+	contractRevision: Type.String({ minLength: 1 }),
+});
+
+const idList = () => Type.Array(Type.String({ minLength: 1 }), { maxItems: 200 });
+const nullableId = () => Type.Union([Type.String({ minLength: 1 }), Type.Null()]);
+
+/**
+ * Schema-v2 typed selection. Every field is an explicit record ID: selection
+ * names never determine scientific validity. `null` means deliberate absence.
+ */
+export const SelectionDraftSchema = Type.Object({
+	goalBinding: Type.Union([GoalBindingSchema, Type.Null()]),
+	objectiveId: Type.String(),
+	constraintIds: idList(),
+	acceptedBaselineRecordId: nullableId(),
+	bestObservedRecordId: nullableId(),
+	bestValidatedRecordId: nullableId(),
+	currentWorkIds: idList(),
+	unresolvedIds: idList(),
+	nextActionIds: idList(),
+	rejectedApproachIds: idList(),
+	pinnedIds: idList(),
+	absenceReason: Type.Optional(Type.String({ maxLength: 200 })),
+});
+
+/** A committed selection additionally carries its engine-issued identity. */
+export const ActiveSelectionSchema = Type.Object({
+	...SelectionDraftSchema.properties,
+	selectionRevision: Type.String({ minLength: 1 }),
+});
+
 export const MutationBatchSchema = Type.Object({
 	operationId: Type.String({ minLength: 1 }),
 	upsertNodes: Type.Optional(Type.Array(WorkingNodeDraftSchema)),
@@ -83,6 +118,7 @@ export const MutationBatchSchema = Type.Object({
 	addEdges: Type.Optional(Type.Array(WorkingEdgeSchema)),
 	removeEdges: Type.Optional(Type.Array(WorkingEdgeSchema)),
 	archiveIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+	setSelection: Type.Optional(SelectionDraftSchema),
 });
 
 export const QueryRequestSchema = Type.Object({
@@ -110,6 +146,23 @@ export const HandoffMarkerSchema = Type.Object({
 	coveredThroughEntryId: Type.String({ minLength: 1 }),
 });
 
+export const CheckpointSchema = Type.Object({
+	schemaVersion: Type.Literal(2),
+	checkpointId: Type.String({ minLength: 1 }),
+	sessionId: Type.String({ minLength: 1 }),
+	branchAnchorId: Type.String({ minLength: 1 }),
+	coveredThroughEntryId: Type.String({ minLength: 1 }),
+	workingRevision: Type.Integer({ minimum: 1 }),
+	workingRevisionId: Type.String({ minLength: 1 }),
+	researchTaskId: Type.String({ minLength: 1 }),
+	researchRevision: Type.Optional(Type.String({ minLength: 1 })),
+	selection: ActiveSelectionSchema,
+	requiredUserEntryIds: Type.Array(Type.String({ minLength: 1 })),
+	requiredEvidence: Type.Array(EvidenceRefSchema),
+	nodes: Type.Array(WorkingNodeSchema),
+	edges: Type.Array(WorkingEdgeSchema),
+});
+
 export type NodeKind = Static<typeof NodeKindSchema>;
 export type NodeStatus = Static<typeof NodeStatusSchema>;
 export type EdgeKind = Static<typeof EdgeKindSchema>;
@@ -117,6 +170,10 @@ export type EvidenceRef = Static<typeof EvidenceRefSchema>;
 export type WorkingNode = Static<typeof WorkingNodeSchema>;
 export type WorkingNodeDraft = Static<typeof WorkingNodeDraftSchema>;
 export type WorkingEdge = Static<typeof WorkingEdgeSchema>;
+export type GoalBinding = Static<typeof GoalBindingSchema>;
+export type SelectionDraft = Static<typeof SelectionDraftSchema>;
+export type ActiveSelection = Static<typeof ActiveSelectionSchema>;
+export type Checkpoint = Static<typeof CheckpointSchema>;
 export type MutationBatch = Static<typeof MutationBatchSchema>;
 export type QueryRequest = Static<typeof QueryRequestSchema>;
 export type PiRefData = Static<typeof PiRefDataSchema>;

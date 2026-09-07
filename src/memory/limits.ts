@@ -3,6 +3,7 @@ export const LIMITS = {
 	maxEdges: 400,
 	maxSerializedBytes: 128 * 1024,
 	maxBatchBytes: 16 * 1024,
+	maxEventBytes: 16 * 1024,
 	maxQueryRecords: 20,
 	maxQueryBytes: 8 * 1024,
 	maxIdReads: 8,

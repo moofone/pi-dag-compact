@@ -43,6 +43,8 @@ export function formatHandoffCard(engine: MemoryEngine): HandoffCard {
 		section("Objective", status.objective),
 		section("Constraints", status.constraints),
 		section("Accepted baseline", status.acceptedBaseline),
+		section("Best observed", status.bestObserved),
+		section("Best correctness-validated", status.bestValidated),
 		section("Current work", status.currentWork),
 		section("Blockers", status.blockers),
 		section("Unresolved questions", status.unresolved),
@@ -51,6 +53,7 @@ export function formatHandoffCard(engine: MemoryEngine): HandoffCard {
 		"## Pointers",
 		`- revision: ${snap.revisionId ?? "(none)"}`,
 		`- checkpoint: ${snap.checkpointId ?? "(none)"}`,
+		`- selection: ${status.selection.selectionRevision}`,
 	].join("\n");
 	return { text, estimatedTokens: estimateTokens(text) };
 }
@@ -59,6 +62,21 @@ export function assertHandoffEligible(engine: MemoryEngine): HandoffCard {
 	const snap = engine.snapshot();
 	if (!snap.revisionId || !snap.checkpointId) {
 		throw new DagError("handoff_refused", "handoff requires a committed checkpoint");
+	}
+	// A selection the structure cannot decide is not a selection. Refusing here
+	// is what keeps a card from silently presenting one of several candidates
+	// as though it were the accepted one.
+	if (snap.ambiguousSelections.length > 0) {
+		throw new DagError(
+			"handoff_refused",
+			`selection is ambiguous for ${snap.ambiguousSelections.join(", ")}; record an explicit selection`,
+		);
+	}
+	if (!snap.selection.objectiveId) {
+		throw new DagError(
+			"handoff_refused",
+			"selection has no objective; an empty objective is never eligible for handoff",
+		);
 	}
 	const card = formatHandoffCard(engine);
 	if (card.estimatedTokens > LIMITS.maxHandoffTokens) {

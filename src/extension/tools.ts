@@ -3,6 +3,7 @@ import { Type } from "typebox";
 import { DagError } from "../memory/errors.ts";
 import { ingestRun } from "../memory/experiment.ts";
 import { queryWorkingSet } from "../memory/query.ts";
+import { ObjectiveMetricSchema } from "../schema/experiment.ts";
 import { MutationBatchSchema, QueryRequestSchema } from "../schema/working.ts";
 import { resolveConfig } from "./config.ts";
 import type { ExtensionRuntime } from "./runtime.ts";
@@ -52,10 +53,14 @@ export function registerRecordTools(pi: ExtensionAPI, runtime: ExtensionRuntime)
 								revision: result.revision,
 								operationId: result.operationId,
 								checkpointId: result.checkpointId,
+								// Creation returns its assigned IDs, so the caller never
+								// has to reread the graph to find what it just made.
+								assignedIds: result.assignedIds,
+								selectionRevision: result.selection.selectionRevision,
 							}),
 						},
 					],
-					details: { revisionId: result.revisionId },
+					details: { revisionId: result.revisionId, assignedIds: result.assignedIds },
 				};
 			} catch (error) {
 				return errorResult(error);
@@ -109,18 +114,30 @@ export function registerRecordTools(pi: ExtensionAPI, runtime: ExtensionRuntime)
 	pi.registerTool({
 		name: "dag_ingest_run",
 		label: "Ingest experiment run",
-		description: "Record manifest.json and result.json for an existing bench run id.",
+		description:
+			"Validate and record manifest.json and result.json for a bench run id. Recording an artifact is not accepting its findings: the promotion assessment is reported, never applied.",
 		parameters: Type.Object({
 			operationId: Type.String({ minLength: 1 }),
 			runId: Type.String({ minLength: 1 }),
+			baselineRunId: Type.Optional(Type.String({ minLength: 1 })),
+			objectiveMetric: Type.Optional(ObjectiveMetricSchema),
+			replicationReason: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
 				const engine = runtime.ensureEngine(ctx);
-				const recordId = ingestRun(engine, ctx.cwd, params.runId, params.operationId);
+				const outcome = ingestRun(engine, ctx.cwd, params.runId, params.operationId, {
+					...(params.baselineRunId ? { baselineRunId: params.baselineRunId } : {}),
+					...(params.objectiveMetric ? { objectiveMetric: params.objectiveMetric } : {}),
+					...(params.replicationReason ? { replicationReason: params.replicationReason } : {}),
+				});
 				return {
-					content: [{ type: "text", text: JSON.stringify({ recordId, runId: params.runId }) }],
-					details: { recordId },
+					content: [{ type: "text", text: JSON.stringify(outcome) }],
+					details: {
+						recordId: outcome.recordId,
+						runStatus: outcome.runStatus,
+						promotionEligible: outcome.promotion.eligible,
+					},
 				};
 			} catch (error) {
 				return errorResult(error);

@@ -1,5 +1,5 @@
 import { parseWithSchema } from "../schema/validate.ts";
-import type { QueryRequest, WorkingNode } from "../schema/working.ts";
+import type { ActiveSelection, QueryRequest, WorkingNode } from "../schema/working.ts";
 import { QueryRequestSchema } from "../schema/working.ts";
 import type { MemoryEngine } from "./engine.ts";
 import { prerequisiteOrder } from "./graph.ts";
@@ -87,36 +87,56 @@ export function queryWorkingSet(engine: MemoryEngine, requestInput: QueryRequest
 	};
 }
 
-export function dagStatus(engine: MemoryEngine): {
+export interface DagStatus {
 	objective: WorkingNode[];
 	constraints: WorkingNode[];
 	acceptedBaseline: WorkingNode[];
+	bestObserved: WorkingNode[];
+	bestValidated: WorkingNode[];
 	currentWork: WorkingNode[];
 	blockers: WorkingNode[];
 	unresolved: WorkingNode[];
 	nextAction: WorkingNode[];
 	rejected: WorkingNode[];
+	selection: ActiveSelection;
+	ambiguousSelections: string[];
 	revisionId: string | null;
-} {
-	const { nodes, edges, revisionId } = engine.snapshot();
-	const blocked = new Set(
-		edges.filter((edge) => edge.kind === "depends_on").map((edge) => edge.from),
-	);
-	const open = (kind: WorkingNode["kind"]) =>
-		nodes.filter((node) => node.kind === kind && node.status === "open");
-	const blockers = [...open("blocker"), ...nodes.filter((node) => node.status === "blocked")];
-	const blockerIds = new Set(blockers.map((node) => node.id));
+}
+
+/**
+ * Project the active set through its typed selection.
+ *
+ * Every list here comes from selected record IDs. Nothing is matched on title
+ * text: whether a record is the accepted baseline is a decision recorded in
+ * the selection, not a property of what it is called.
+ */
+export function dagStatus(engine: MemoryEngine): DagStatus {
+	const { nodes, revisionId, selection, ambiguousSelections } = engine.snapshot();
+	const byId = new Map(nodes.map((node) => [node.id, node]));
+	const pick = (ids: string[]): WorkingNode[] =>
+		ids.map((id) => byId.get(id)).filter((node): node is WorkingNode => node !== undefined);
+	const one = (id: string | null): WorkingNode[] => (id ? pick([id]) : []);
+
+	// Blockers are their own kind plus anything explicitly blocked; unresolved
+	// questions are a different thing and are never folded into them.
+	const blockers = [
+		...nodes.filter((node) => node.kind === "blocker" && node.status === "open"),
+		...nodes.filter((node) => node.kind !== "blocker" && node.status === "blocked"),
+	];
+
 	return {
-		objective: nodes.filter((node) => node.kind === "goal"),
-		constraints: nodes.filter((node) => node.kind === "constraint"),
-		acceptedBaseline: nodes.filter(
-			(node) => node.kind === "decision" && node.status === "done" && /baseline/i.test(node.title),
-		),
-		currentWork: [...open("task"), ...open("hypothesis")],
+		objective: one(selection.objectiveId || null),
+		constraints: pick(selection.constraintIds),
+		acceptedBaseline: one(selection.acceptedBaselineRecordId),
+		bestObserved: one(selection.bestObservedRecordId),
+		bestValidated: one(selection.bestValidatedRecordId),
+		currentWork: pick(selection.currentWorkIds),
 		blockers,
-		unresolved: blockers,
-		nextAction: open("task").filter((node) => !blocked.has(node.id) && !blockerIds.has(node.id)),
-		rejected: nodes.filter((node) => node.status === "rejected"),
+		unresolved: pick(selection.unresolvedIds).filter((node) => node.kind !== "blocker"),
+		nextAction: pick(selection.nextActionIds),
+		rejected: pick(selection.rejectedApproachIds),
+		selection,
+		ambiguousSelections,
 		revisionId,
 	};
 }

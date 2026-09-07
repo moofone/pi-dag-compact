@@ -122,7 +122,16 @@ function archiveSome(
 		)
 		.map((node) => node.id);
 	if (archiveIds.length === 0) return 0;
-	engine.update({ operationId: `arch-${turn}`, archiveIds }, { sessionId, leafId });
+	// The engine refuses to archive nonterminal work, so retiring a hypothesis
+	// is now an explicit resolution followed by archival in the same batch.
+	engine.update(
+		{
+			operationId: `arch-${turn}`,
+			setStatus: archiveIds.map((id) => ({ id, status: "stale" as const })),
+			archiveIds,
+		},
+		{ sessionId, leafId },
+	);
 	return archiveIds.length;
 }
 
