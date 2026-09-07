@@ -1,0 +1,46 @@
+{
+	"schemaVersion": 1,
+	"label": "v3",
+	"seed": "r0-variant-v3",
+	"answerSource": "script",
+	"workloadId": "W1",
+	"candidateOrder": ["baseline", "E", "D", "C", "B", "A"],
+	"candidates": {
+		"baseline": {
+			"pipelineP50Ms": 38.9,
+			"kernelP50Ms": 9.7,
+			"smemPct": 51,
+			"correctness": "pass"
+		},
+		"A": {
+			"pipelineP50Ms": 41.5,
+			"kernelP50Ms": 7.2,
+			"smemPct": 66,
+			"correctness": "pass"
+		},
+		"B": {
+			"pipelineP50Ms": 33.4,
+			"kernelP50Ms": 6.1,
+			"smemPct": 94,
+			"correctness": "fail"
+		},
+		"C": {
+			"pipelineP50Ms": 36.2,
+			"kernelP50Ms": 8.4,
+			"smemPct": 60,
+			"correctness": "pass"
+		},
+		"D": {
+			"pipelineP50Ms": 35.1,
+			"kernelP50Ms": 8,
+			"smemPct": 63,
+			"correctness": "unknown"
+		},
+		"E": {
+			"pipelineP50Ms": 34,
+			"kernelP50Ms": 7.6,
+			"smemPct": 64,
+			"correctness": "pass"
+		}
+	}
+}
