@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { MemoryEngine } from "../../src/memory/engine.ts";
 import { ingestRun } from "../../src/memory/experiment.ts";
 import { dagStatus } from "../../src/memory/query.ts";
+import { commit } from "../support/commit.ts";
 import { makeTempDir } from "../support/tmp.ts";
 
 const BRANCH = { sessionId: "s", leafId: "leaf-1" };
@@ -101,7 +102,8 @@ test("S05 best observed, best correctness-validated, and accepted baseline can a
 		ingestRun(engine, tmp.path, "run-accepted", "ing-accepted");
 		ingestRun(engine, tmp.path, "run-observed", "ing-observed");
 		ingestRun(engine, tmp.path, "run-validated", "ing-validated");
-		engine.update(
+		commit(
+			engine,
 			{
 				operationId: "s05-select",
 				upsertNodes: [

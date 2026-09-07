@@ -10,26 +10,26 @@ import {
 import type { PiRefLike } from "../memory/engine.ts";
 import { utf8Bytes } from "../memory/limits.ts";
 import { type ChunkView, fitChunk } from "../memory/retrieval.ts";
-import { parseWithSchema } from "../schema/validate.ts";
 import type { PiRefData } from "../schema/working.ts";
-import { PiRefDataSchema } from "../schema/working.ts";
 
 export function collectPiRefs(sessionManager: BranchReader): PiRefLike[] {
 	return collectPiRefsFromEntries(sessionManager.getBranch());
 }
 
+/**
+ * Every DAG reference the branch carries, readable or not.
+ *
+ * An unreadable reference is deliberately not dropped here. Dropping it would
+ * turn a lost pointer into an absent one and let an older readable reference
+ * silently take its place; the engine has to see it and refuse.
+ */
 export function collectPiRefsFromEntries(entries: readonly SessionEntry[]): PiRefLike[] {
 	const refs: PiRefLike[] = [];
 	for (const entry of entries) {
 		if (entry.type !== "custom") continue;
 		if (entry.customType !== "dag_revision_ref" && entry.customType !== "dag_checkpoint_ref")
 			continue;
-		try {
-			const data = parseWithSchema(PiRefDataSchema, entry.data, "pi ref");
-			refs.push({ customType: entry.customType, data });
-		} catch {
-			// skip malformed refs
-		}
+		refs.push({ customType: entry.customType, data: entry.data, entryId: entry.id });
 	}
 	return refs;
 }

@@ -56,6 +56,16 @@ function build(pi: ExtensionAPI, options: PiDagCompactOptions): void {
 			}
 			try {
 				const engine = runtime.ensureEngine(ctx);
+				const fault = engine.reconstructionFault;
+				if (fault) {
+					// Nothing is published, and saying so is the point: an empty status
+					// line would read as "no memory yet" rather than "unverifiable".
+					ctx.ui.notify(
+						`working set not published: ${fault.code} for ${fault.revisionId ?? "a branch reference"} — ${fault.detail}`,
+						"error",
+					);
+					return;
+				}
 				const status = dagStatus(engine);
 				ctx.ui.notify(
 					[

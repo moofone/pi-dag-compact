@@ -7,7 +7,13 @@ import type {
 	WorkingEdge,
 	WorkingNode,
 } from "../schema/working.ts";
-import { MutationBatchSchema, WorkingNodeDraftSchema } from "../schema/working.ts";
+import {
+	MutationBatchSchema,
+	PiRefDataSchema,
+	WorkingEdgeSchema,
+	WorkingNodeDraftSchema,
+	WorkingNodeSchema,
+} from "../schema/working.ts";
 import { canonicalBatch, canonicalSnapshot, edgeKey, newId, sha256 } from "./canonical.ts";
 import { DagError } from "./errors.ts";
 import { cloneEdges, cloneNodes, validateActiveSet } from "./graph.ts";
@@ -19,6 +25,7 @@ import {
 	pinnedIds,
 	type ResolvedSelection,
 	resolveSelection,
+	selectionStateHash,
 	validateSelectionDraft,
 } from "./selection.ts";
 import {
@@ -26,6 +33,7 @@ import {
 	type ArchiveKey,
 	parseGraph,
 	type RevisionRow,
+	type RevisionStatus,
 	SqliteStore,
 } from "./store.ts";
 
@@ -38,6 +46,7 @@ export interface WorkingSnapshot {
 	taskId: string;
 	revisionId: string | null;
 	revision: number;
+	/** D1: checkpoint identity equals revision identity. */
 	checkpointId: string | null;
 	nodes: WorkingNode[];
 	edges: WorkingEdge[];
@@ -47,6 +56,26 @@ export interface WorkingSnapshot {
 	selection: ActiveSelection;
 	/** Selection slots the structure could not decide without an explicit ID. */
 	ambiguousSelections: string[];
+	/**
+	 * A committed operation with no acknowledged reference. It is durable and it
+	 * is selected by nothing; it never appears in the published view above.
+	 */
+	pending: { operationId: string; revisionId: string } | null;
+	/** Set when the last load could not account for the selected revision. */
+	fault: ReconstructionFault | null;
+}
+
+/**
+ * What a load refused to accept, and why.
+ *
+ * A fault means the engine published nothing. It never means "we fell back to
+ * something older": an older revision cannot stand in for a selected one whose
+ * content could not be verified.
+ */
+export interface ReconstructionFault {
+	code: string;
+	detail: string;
+	revisionId: string | null;
 }
 
 export interface CommitResult {
@@ -55,13 +84,19 @@ export interface CommitResult {
 	operationId: string;
 	payloadHash: string;
 	snapshotHash: string;
-	checkpointId: string | null;
-	status: "pending_ref" | "selected" | "unselected";
+	/** D1: identical to `revisionId`. */
+	checkpointId: string;
+	status: RevisionStatus;
+	/** True when this receipt already existed and nothing new was committed. */
+	replayed: boolean;
+	/** The acknowledged reference entry, when this revision already has one. */
+	piEntryId: string | null;
 	nodes: WorkingNode[];
 	edges: WorkingEdge[];
 	/** IDs the engine issued for drafts that arrived without one. */
 	assignedIds: string[];
 	selection: ActiveSelection;
+	selectionHash: string;
 	piRef: PiRefData;
 }
 
@@ -82,6 +117,16 @@ export interface ResearchIngestResult {
 export interface PiRefLike {
 	customType: string;
 	data: unknown;
+	/** The session entry carrying the reference, when the caller knows it. */
+	entryId?: string;
+}
+
+/** The published revision, as it was loaded and verified from one row. */
+interface LoadedRevision {
+	row: RevisionRow;
+	nodes: WorkingNode[];
+	edges: WorkingEdge[];
+	explicitSelection: ActiveSelection | null;
 }
 
 const REF_TYPES = new Set(["dag_revision_ref", "dag_checkpoint_ref"]);
@@ -90,12 +135,14 @@ export class MemoryEngine {
 	readonly taskId: string;
 	readonly sessionId: string;
 	private readonly store: SqliteStore;
-	private nodes: WorkingNode[] = [];
-	private edges: WorkingEdge[] = [];
-	private revisionId: string | null = null;
-	private revision = 0;
-	private checkpointId: string | null = null;
-	private explicitSelection: ActiveSelection | null = null;
+	/**
+	 * The published revision: the one the branch pointer selects and the only one
+	 * any public surface may show. A SQLite commit does not put anything here.
+	 */
+	private published: LoadedRevision | null = null;
+	/** The prepared, unacknowledged operation on this scope, if any. */
+	private candidate: RevisionRow | null = null;
+	private fault: ReconstructionFault | null = null;
 
 	private constructor(taskId: string, sessionId: string, store: SqliteStore) {
 		this.taskId = taskId;
@@ -123,24 +170,51 @@ export class MemoryEngine {
 		this.close();
 	}
 
+	/**
+	 * The published view.
+	 *
+	 * Never the candidate, never "the latest row in SQLite". Between a commit and
+	 * its acknowledgement this keeps returning the previous selection, which is
+	 * the whole point of the two-store protocol.
+	 */
 	snapshot(): WorkingSnapshot {
-		const resolved = resolveSelection(
-			this.nodes,
-			this.edges,
-			this.explicitSelection,
-			Math.max(this.revision, 1),
-		);
+		const nodes = this.published ? this.published.nodes : [];
+		const edges = this.published ? this.published.edges : [];
+		const explicit = this.published?.explicitSelection ?? null;
+		const revision = this.published?.row.revision ?? 0;
+		const resolved = resolveSelection(nodes, edges, explicit, Math.max(revision, 1));
 		return {
 			taskId: this.taskId,
-			revisionId: this.revisionId,
-			revision: this.revision,
-			checkpointId: this.checkpointId,
-			nodes: cloneNodes(this.nodes),
-			edges: cloneEdges(this.edges),
-			explicitSelection: this.explicitSelection,
+			revisionId: this.published?.row.revisionId ?? null,
+			revision,
+			checkpointId: this.published?.row.revisionId ?? null,
+			nodes: cloneNodes(nodes),
+			edges: cloneEdges(edges),
+			explicitSelection: explicit,
 			selection: resolved.selection,
 			ambiguousSelections: resolved.ambiguous,
+			pending: this.candidate
+				? { operationId: this.candidate.operationId, revisionId: this.candidate.revisionId }
+				: null,
+			fault: this.fault,
 		};
+	}
+
+	/** The last load's refusal, if it refused. */
+	get reconstructionFault(): ReconstructionFault | null {
+		return this.fault;
+	}
+
+	/**
+	 * The snapshot hash recomputed from the state that was actually loaded.
+	 *
+	 * D1/D04: a review binds to this, never to the stored `payload_hash` column.
+	 * The column is checked against this value at load time, so by the time a
+	 * revision is published the two have already been made to agree.
+	 */
+	selectedSnapshotHash(): string | null {
+		if (!this.published) return null;
+		return sha256(canonicalSnapshot(this.published.nodes, this.published.edges));
 	}
 
 	update(batchInput: MutationBatch, branch: BranchContext): CommitResult {
@@ -163,37 +237,58 @@ export class MemoryEngine {
 			if (!existingRev) {
 				throw new DagError("op_conflict", `operation ${batch.operationId} is missing its revision`);
 			}
-			return this.commitResultFromRow(existingRev);
+			if (existingRev.expectedSessionId !== branch.sessionId) {
+				throw new DagError(
+					"scope_conflict",
+					`operation ${batch.operationId} belongs to session ${existingRev.expectedSessionId}, not ${branch.sessionId}`,
+				);
+			}
+			// The receipt, and nothing else: no new revision, no branch movement,
+			// and the caller must not append a second reference for it.
+			return this.commitResultFromRow(existingRev, true);
 		}
 
-		const nextRevision = this.revision + 1;
-		const next = applyBatch(this.nodes, this.edges, batch, nextRevision, this.explicitSelection);
+		if (this.fault) {
+			throw new DagError(
+				"corrupt_state",
+				`cannot commit onto unverified state: ${this.fault.code}: ${this.fault.detail}`,
+			);
+		}
+
+		const competing = this.pendingAtPublishedPosition(branch.sessionId);
+		if (competing) {
+			throw new DagError(
+				"pending_operation",
+				`operation ${competing.operationId} is prepared and unacknowledged on this scope; acknowledge or quarantine it before another update`,
+			);
+		}
+
+		const baseNodes = this.published?.nodes ?? [];
+		const baseEdges = this.published?.edges ?? [];
+		const baseSelection = this.published?.explicitSelection ?? null;
+		const parentRevisionId = this.published?.row.revisionId ?? null;
+		const nextRevision = (this.published?.row.revision ?? 0) + 1;
+		const next = applyBatch(baseNodes, baseEdges, batch, nextRevision, baseSelection);
 		validateActiveSet(next.nodes, next.edges);
-		const explicitSelection = nextExplicitSelection(
-			batch,
-			this.explicitSelection,
-			next.nodes,
-			nextRevision,
-		);
+		const explicitSelection = nextExplicitSelection(batch, baseSelection, next.nodes, nextRevision);
 		const resolved = resolveSelection(next.nodes, next.edges, explicitSelection, nextRevision);
-		const snapshotJson = canonicalSnapshot(next.nodes, next.edges);
-		const snapshotHash = sha256(snapshotJson);
+		const snapshotHash = sha256(canonicalSnapshot(next.nodes, next.edges));
 		const revisionId = newId("rev");
-		const mutations = this.store.mutationsSinceCheckpoint(this.revisionId);
-		let checkpointId: string | null = this.checkpointId;
-		const needsCheckpoint = mutations >= LIMITS.maxReplayMutations || this.revisionId === null;
 
 		const row: RevisionRow = {
 			revisionId,
 			revision: nextRevision,
-			parentRevisionId: this.revisionId,
+			parentRevisionId,
 			operationId: batch.operationId,
 			payloadHash: snapshotHash,
-			checkpointId: null,
+			// D1: the revision is its own checkpoint. No second table, no replay bound.
+			checkpointId: revisionId,
 			nodesJson: JSON.stringify(next.nodes),
 			edgesJson: JSON.stringify(next.edges),
 			selectionJson: explicitSelection ? JSON.stringify(explicitSelection) : null,
-			status: "pending_ref",
+			selectionHash: selectionStateHash(explicitSelection),
+			status: "prepared",
+			ackDurability: null,
 			expectedSessionId: branch.sessionId,
 			expectedBranchLeafId: branch.leafId,
 			piEntryId: null,
@@ -202,43 +297,14 @@ export class MemoryEngine {
 
 		this.store.transaction(() => {
 			this.store.putOperation(batch.operationId, batchHash, batchJson);
-			if (needsCheckpoint) {
-				checkpointId = newId("ckpt");
-				row.checkpointId = checkpointId;
-				this.store.insertCheckpoint(
-					checkpointId,
-					revisionId,
-					JSON.stringify({
-						schemaVersion: 2,
-						checkpointId,
-						sessionId: branch.sessionId,
-						branchAnchorId: branch.leafId,
-						coveredThroughEntryId: branch.leafId,
-						workingRevision: row.revision,
-						workingRevisionId: revisionId,
-						researchTaskId: this.taskId,
-						selection: resolved.selection,
-						requiredUserEntryIds: [],
-						requiredEvidence: next.nodes.flatMap((node) => node.evidence),
-						nodes: next.nodes,
-						edges: next.edges,
-					}),
-					snapshotHash,
-				);
-			}
 			this.store.insertRevision(row);
 			for (const id of batch.archiveIds ?? []) {
-				const archived = this.nodes.find((node) => node.id === id);
+				const archived = baseNodes.find((node) => node.id === id);
 				if (archived) this.store.archiveNode(id, revisionId, JSON.stringify(archived));
 			}
 		});
 
-		this.nodes = next.nodes;
-		this.edges = next.edges;
-		this.revisionId = revisionId;
-		this.revision = row.revision;
-		this.checkpointId = checkpointId;
-		this.explicitSelection = explicitSelection;
+		this.candidate = row;
 
 		return {
 			revisionId,
@@ -246,76 +312,186 @@ export class MemoryEngine {
 			operationId: batch.operationId,
 			payloadHash: batchHash,
 			snapshotHash,
-			checkpointId,
-			status: "pending_ref",
+			checkpointId: revisionId,
+			status: "prepared",
+			replayed: false,
+			piEntryId: null,
 			nodes: cloneNodes(next.nodes),
 			edges: cloneEdges(next.edges),
 			assignedIds: next.assignedIds,
 			selection: resolved.selection,
+			selectionHash: row.selectionHash,
 			piRef: {
 				v: 1,
 				taskId: this.taskId,
 				operationId: batch.operationId,
 				revisionId,
 				payloadHash: snapshotHash,
-				...(checkpointId ? { checkpointId } : {}),
+				checkpointId: revisionId,
 			},
 		};
 	}
 
-	acknowledgeRef(operationId: string, entryId: string): void {
+	/**
+	 * Publish an operation whose reference the host has taken.
+	 *
+	 * The expected parent is compared here, not assumed: a revision may only be
+	 * published onto the position it was prepared against.
+	 */
+	acknowledgeRef(operationId: string, entryId: string, durability?: string): void {
 		const row = this.store.getRevisionByOperation(operationId);
 		if (!row) throw new DagError("unknown_revision", `no revision for operation ${operationId}`);
 		if (row.status === "unselected") return;
-		this.store.setRevisionStatus(row.revisionId, "selected", entryId);
+		if (row.status === "selected") {
+			// Reconcile once. A second acknowledgement of the same revision is a
+			// no-op, not a second publication.
+			if (this.published?.row.revisionId !== row.revisionId) this.publishRow(row);
+			return;
+		}
+		const publishedId = this.published?.row.revisionId ?? null;
+		if (row.parentRevisionId !== publishedId) {
+			throw new DagError(
+				"expected_parent_mismatch",
+				`revision ${row.revisionId} expects parent ${row.parentRevisionId ?? "(none)"}, but ${publishedId ?? "(none)"} is published`,
+			);
+		}
+		this.store.setRevisionStatus(row.revisionId, "selected", entryId, durability ?? null);
+		const selected = this.store.getRevision(row.revisionId);
+		if (selected) this.publishRow(selected);
+		if (this.candidate?.revisionId === row.revisionId) this.candidate = null;
 	}
 
+	/**
+	 * Quarantine an operation.
+	 *
+	 * It stays in the store for audit and never becomes selectable. This is the
+	 * resolution a failed Pi append gets: the work is durable, and it is not
+	 * allowed to leak into whatever is published next.
+	 */
 	markUnselected(operationId: string): void {
 		const row = this.store.getRevisionByOperation(operationId);
 		if (!row) return;
 		this.store.setRevisionStatus(row.revisionId, "unselected", row.piEntryId);
-		if (this.revisionId === row.revisionId) {
-			this.reconstructFromRow(
-				row.parentRevisionId ? this.store.getRevision(row.parentRevisionId) : undefined,
-			);
+		if (this.candidate?.revisionId === row.revisionId) this.candidate = null;
+		if (this.published?.row.revisionId === row.revisionId) {
+			const parent = row.parentRevisionId
+				? this.store.getRevision(row.parentRevisionId)
+				: undefined;
+			if (parent) this.publishRow(parent);
+			else this.clearPublished();
 		}
 	}
 
+	/**
+	 * Rebuild from the branch, which is the only selection authority.
+	 *
+	 * Every reference on the branch must be readable; the last one names the
+	 * selected revision; that revision is loaded from its own single row and
+	 * re-verified — snapshot hash, selection hash, schema, dependency subgraph and
+	 * parent linkage — before anything is published. A refusal publishes nothing.
+	 */
 	reconstruct(branchRefs: PiRefLike[]): WorkingSnapshot {
-		const refs = branchRefs
-			.filter((entry) => REF_TYPES.has(entry.customType))
-			.map((entry) => entry.data as PiRefData);
+		this.fault = null;
+		this.candidate = null;
+		const entries = branchRefs.filter((entry) => REF_TYPES.has(entry.customType));
+		const refs: PiRefData[] = [];
+		for (const entry of entries) {
+			try {
+				refs.push(parseWithSchema(PiRefDataSchema, entry.data, "pi ref"));
+			} catch (error) {
+				// An unreadable reference is a lost reference, not an absent one. An
+				// older readable reference must not quietly take its place.
+				return this.failLoad({
+					code: "corrupt_ref",
+					detail: `a ${entry.customType} entry on the branch could not be read: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+					revisionId: null,
+				});
+			}
+		}
 		const latest = refs.at(-1);
 		if (!latest) {
-			this.nodes = [];
-			this.edges = [];
-			this.revisionId = null;
-			this.revision = 0;
-			this.checkpointId = null;
+			this.clearPublished();
 			return this.snapshot();
 		}
 		const row = this.store.getRevision(latest.revisionId);
-		if (!row || row.payloadHash !== latest.payloadHash) {
-			throw new DagError("corrupt_ref", "branch reference does not match durable revision");
+		if (!row) {
+			return this.failLoad({
+				code: "corrupt_ref",
+				detail: `the branch selects revision ${latest.revisionId}, which is not in the store`,
+				revisionId: latest.revisionId,
+			});
 		}
 		if (row.status === "unselected") {
-			throw new DagError("unselected", "branch reference points at an unselected revision");
+			return this.failLoad({
+				code: "unselected",
+				detail: `the branch selects quarantined revision ${row.revisionId}`,
+				revisionId: row.revisionId,
+			});
 		}
-		this.reconstructFromRow(row);
+		if (row.payloadHash !== latest.payloadHash) {
+			return this.failLoad({
+				code: "corrupt_ref",
+				detail: `revision ${row.revisionId} does not match the payload hash its reference carries`,
+				revisionId: row.revisionId,
+			});
+		}
+		let loaded: LoadedRevision;
+		try {
+			loaded = this.loadRevision(row);
+		} catch (error) {
+			return this.failLoad({
+				code: error instanceof DagError ? error.code : "corrupt_state",
+				detail: error instanceof Error ? error.message : String(error),
+				revisionId: row.revisionId,
+			});
+		}
+		if (row.status === "prepared") {
+			// The pointer is on the branch and the acknowledgement is missing. The
+			// pointer is the authority, so it reconciles here — once, and only onto
+			// the ancestry the revision was prepared against.
+			const expectedParent = refs.at(-2)?.revisionId ?? null;
+			if (row.parentRevisionId !== expectedParent) {
+				return this.failLoad({
+					code: "expected_parent_mismatch",
+					detail: `revision ${row.revisionId} was prepared against parent ${
+						row.parentRevisionId ?? "(none)"
+					}, but the branch selects ${expectedParent ?? "(none)"} before it`,
+					revisionId: row.revisionId,
+				});
+			}
+			const entryId = entries.at(-1)?.entryId ?? row.piEntryId ?? `reconciled:${row.revisionId}`;
+			this.store.setRevisionStatus(row.revisionId, "selected", entryId);
+			const reloaded = this.store.getRevision(row.revisionId);
+			if (reloaded) loaded.row = reloaded;
+		}
+		this.published = loaded;
 		return this.snapshot();
 	}
 
+	/**
+	 * Offer references the host never took.
+	 *
+	 * Appended only when the expected branch and the expected parent both still
+	 * match. On the expected branch with a parent that is no longer published,
+	 * the record is quarantined rather than applied to a different ancestry.
+	 */
 	reconcilePending(
 		branch: BranchContext,
 		appendRef: (ref: PiRefData, checkpoint: boolean) => string | undefined,
 	): void {
 		for (const row of this.store.listPendingForSession(branch.sessionId)) {
 			if (row.expectedBranchLeafId !== branch.leafId) continue;
-			const entryId = appendRef(this.commitResultFromRow(row).piRef, Boolean(row.checkpointId));
-			if (entryId) {
-				this.acknowledgeRef(row.operationId, entryId);
-				this.reconstructFromRow(row);
+			const publishedId = this.published?.row.revisionId ?? null;
+			if (row.parentRevisionId !== publishedId) {
+				this.store.setRevisionStatus(row.revisionId, "unselected", row.piEntryId);
+				if (this.candidate?.revisionId === row.revisionId) this.candidate = null;
+				continue;
 			}
+			const entryId = appendRef(this.commitResultFromRow(row, false).piRef, true);
+			if (!entryId) continue;
+			this.acknowledgeRef(row.operationId, entryId);
 		}
 	}
 
@@ -442,11 +618,11 @@ export class MemoryEngine {
 	// --- bounded durable reads (RetrievalSource) ---------------------------
 
 	snapshotNodes(): WorkingNode[] {
-		return cloneNodes(this.nodes);
+		return cloneNodes(this.published?.nodes ?? []);
 	}
 
 	snapshotRevisionId(): string | null {
-		return this.revisionId;
+		return this.published?.row.revisionId ?? null;
 	}
 
 	archivedHighWater(): number {
@@ -485,7 +661,7 @@ export class MemoryEngine {
 	}
 
 	checkpointMeta(checkpointId: string): Record<string, unknown> | undefined {
-		const row = this.store.getCheckpoint(checkpointId);
+		const row = this.store.getCheckpoint(checkpointId, this.taskId);
 		if (!row) return undefined;
 		let schemaVersion: unknown;
 		let workingRevisionId: unknown;
@@ -531,28 +707,102 @@ export class MemoryEngine {
 		};
 	}
 
-	private reconstructFromRow(row: RevisionRow | undefined): void {
-		if (!row) {
-			this.nodes = [];
-			this.edges = [];
-			this.revisionId = null;
-			this.revision = 0;
-			this.checkpointId = null;
-			this.explicitSelection = null;
-			return;
-		}
-		const graph = parseGraph(row.nodesJson, row.edgesJson);
-		this.nodes = graph.nodes;
-		this.edges = graph.edges;
-		this.revisionId = row.revisionId;
-		this.revision = row.revision;
-		this.checkpointId = row.checkpointId;
-		this.explicitSelection = row.selectionJson
-			? (JSON.parse(row.selectionJson) as ActiveSelection)
-			: null;
+	private clearPublished(): void {
+		this.published = null;
 	}
 
-	private commitResultFromRow(row: RevisionRow): CommitResult {
+	private publishRow(row: RevisionRow): void {
+		this.published = this.loadRevision(row);
+	}
+
+	private failLoad(fault: ReconstructionFault): never {
+		this.fault = fault;
+		this.published = null;
+		this.candidate = null;
+		throw new DagError(fault.code, fault.detail);
+	}
+
+	/**
+	 * Load and re-verify one revision from its own row.
+	 *
+	 * Reconstruction is one row read plus verification (D1). The stored hash
+	 * columns are treated as claims about the JSON beside them, never as
+	 * evidence: both are recomputed from what was actually parsed, the records
+	 * are revalidated against the schema, the whole dependency subgraph is
+	 * rechecked, and the parent link must resolve.
+	 */
+	private loadRevision(row: RevisionRow): LoadedRevision {
+		let graph: { nodes: WorkingNode[]; edges: WorkingEdge[] };
+		try {
+			graph = parseGraph(row.nodesJson, row.edgesJson);
+		} catch (error) {
+			throw new DagError(
+				"corrupt_snapshot",
+				`revision ${row.revisionId} does not hold readable state: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
+		}
+		if (!Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) {
+			throw new DagError("corrupt_snapshot", `revision ${row.revisionId} does not hold a graph`);
+		}
+		const recomputed = sha256(canonicalSnapshot(graph.nodes, graph.edges));
+		if (recomputed !== row.payloadHash) {
+			throw new DagError(
+				"corrupt_snapshot",
+				`revision ${row.revisionId} does not hash to its stored payload hash`,
+			);
+		}
+		for (const node of graph.nodes) {
+			parseWithSchema(WorkingNodeSchema, node, `revision ${row.revisionId} node`);
+		}
+		for (const edge of graph.edges) {
+			parseWithSchema(WorkingEdgeSchema, edge, `revision ${row.revisionId} edge`);
+		}
+		validateActiveSet(graph.nodes, graph.edges);
+
+		let explicitSelection: ActiveSelection | null = null;
+		if (row.selectionJson) {
+			try {
+				explicitSelection = JSON.parse(row.selectionJson) as ActiveSelection;
+			} catch (error) {
+				throw new DagError(
+					"corrupt_selection",
+					`revision ${row.revisionId} does not hold a readable selection: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				);
+			}
+		}
+		// A store written before R2 has no selection hash to compare against.
+		if (row.selectionHash && selectionStateHash(explicitSelection) !== row.selectionHash) {
+			throw new DagError(
+				"corrupt_selection",
+				`revision ${row.revisionId} does not hash to its stored selection hash`,
+			);
+		}
+		if (row.parentRevisionId && !this.store.getRevision(row.parentRevisionId)) {
+			throw new DagError(
+				"corrupt_parent",
+				`revision ${row.revisionId} names parent ${row.parentRevisionId}, which is not in the store`,
+			);
+		}
+		return { row, nodes: graph.nodes, edges: graph.edges, explicitSelection };
+	}
+
+	/**
+	 * A prepared operation competing for the position the published revision
+	 * occupies. Work prepared against some other ancestry is not competing for
+	 * this one and does not block it.
+	 */
+	private pendingAtPublishedPosition(sessionId: string): RevisionRow | undefined {
+		const publishedId = this.published?.row.revisionId ?? null;
+		return this.store
+			.listPendingForSession(sessionId)
+			.find((row) => row.parentRevisionId === publishedId);
+	}
+
+	private commitResultFromRow(row: RevisionRow, replayed: boolean): CommitResult {
 		const graph = parseGraph(row.nodesJson, row.edgesJson);
 		const explicit = row.selectionJson ? (JSON.parse(row.selectionJson) as ActiveSelection) : null;
 		const resolved = resolveSelection(graph.nodes, graph.edges, explicit, row.revision);
@@ -562,19 +812,22 @@ export class MemoryEngine {
 			operationId: row.operationId,
 			payloadHash: this.store.getOperation(row.operationId)?.payloadHash ?? row.payloadHash,
 			snapshotHash: row.payloadHash,
-			checkpointId: row.checkpointId,
+			checkpointId: row.revisionId,
 			status: row.status,
+			replayed,
+			piEntryId: row.piEntryId,
 			nodes: graph.nodes,
 			edges: graph.edges,
 			assignedIds: [],
 			selection: resolved.selection,
+			selectionHash: row.selectionHash,
 			piRef: {
 				v: 1,
 				taskId: this.taskId,
 				operationId: row.operationId,
 				revisionId: row.revisionId,
 				payloadHash: row.payloadHash,
-				...(row.checkpointId ? { checkpointId: row.checkpointId } : {}),
+				checkpointId: row.revisionId,
 			},
 		};
 	}

@@ -4,11 +4,13 @@ import { HandoffController } from "../../src/extension/handoff.ts";
 import { MemoryEngine } from "../../src/memory/engine.ts";
 import { DagError } from "../../src/memory/errors.ts";
 import { assertHandoffEligible, reviewIsFresh } from "../../src/memory/handoff.ts";
+import { commit } from "../support/commit.ts";
 import { makeTempDir } from "../support/tmp.ts";
 
 function seed(dir: string, body = ""): MemoryEngine {
 	const engine = MemoryEngine.open(dir, "s");
-	engine.update(
+	commit(
+		engine,
 		{
 			operationId: "seed",
 			upsertNodes: [
@@ -68,12 +70,22 @@ test("a user correction after review falls back to classic", () => {
 		const review = handoff.prepare(engine, { sessionId: "s", leafId: "leaf-1" });
 		handoff.arm(review);
 		assert.equal(
-			reviewIsFresh(review, { sessionId: "s", leafId: "leaf-2", revisionId: review.revisionId }),
+			reviewIsFresh(review, {
+				sessionId: "s",
+				leafId: "leaf-2",
+				revisionId: review.revisionId,
+				snapshotHash: review.snapshotHash,
+			}),
 			false,
 		);
 		const decision = handoff.onBeforeCompact(
 			compactEvent(),
-			{ sessionId: "s", leafId: "leaf-2", revisionId: review.revisionId },
+			{
+				sessionId: "s",
+				leafId: "leaf-2",
+				revisionId: review.revisionId,
+				snapshotHash: review.snapshotHash,
+			},
 			"card",
 		);
 		assert.equal(decision, undefined);
@@ -90,7 +102,12 @@ test("fresh review coverage is not semantic proof", () => {
 		const engine = seed(tmp.path);
 		const review = new HandoffController().prepare(engine, { sessionId: "s", leafId: "leaf-1" });
 		assert.equal(
-			reviewIsFresh(review, { sessionId: "s", leafId: "leaf-1", revisionId: review.revisionId }),
+			reviewIsFresh(review, {
+				sessionId: "s",
+				leafId: "leaf-1",
+				revisionId: review.revisionId,
+				snapshotHash: review.snapshotHash,
+			}),
 			true,
 		);
 		assert.equal(
@@ -107,7 +124,7 @@ test("unarmed compact stays classic", () => {
 	const handoff = new HandoffController();
 	const decision = handoff.onBeforeCompact(
 		compactEvent(),
-		{ sessionId: "s", leafId: "leaf-1", revisionId: "rev" },
+		{ sessionId: "s", leafId: "leaf-1", revisionId: "rev", snapshotHash: "h" },
 		"card",
 	);
 	assert.equal(decision, undefined);
@@ -121,7 +138,12 @@ test("threshold compaction is never a DAG handoff", () => {
 		handoff.arm(handoff.prepare(engine, { sessionId: "s", leafId: "leaf-1" }));
 		const decision = handoff.onBeforeCompact(
 			compactEvent("threshold"),
-			{ sessionId: "s", leafId: "leaf-1", revisionId: engine.snapshot().revisionId },
+			{
+				sessionId: "s",
+				leafId: "leaf-1",
+				revisionId: engine.snapshot().revisionId,
+				snapshotHash: engine.selectedSnapshotHash(),
+			},
 			"card",
 		);
 		assert.equal(decision, undefined);
@@ -139,7 +161,12 @@ test("abort during an armed handoff cancels the cut", () => {
 		handoff.arm(handoff.prepare(engine, { sessionId: "s", leafId: "leaf-1" }));
 		const decision = handoff.onBeforeCompact(
 			compactEvent("manual", true),
-			{ sessionId: "s", leafId: "leaf-1", revisionId: engine.snapshot().revisionId },
+			{
+				sessionId: "s",
+				leafId: "leaf-1",
+				revisionId: engine.snapshot().revisionId,
+				snapshotHash: engine.selectedSnapshotHash(),
+			},
 			"card",
 		);
 		assert.deepEqual(decision, { cancel: true });
@@ -155,7 +182,7 @@ test("a fenced session cannot compact or re-arm", () => {
 	assert.deepEqual(
 		handoff.onBeforeCompact(
 			compactEvent(),
-			{ sessionId: "s", leafId: "l", revisionId: "r" },
+			{ sessionId: "s", leafId: "l", revisionId: "r", snapshotHash: "h" },
 			"card",
 		),
 		{ cancel: true },
@@ -166,7 +193,8 @@ test("a fenced session cannot compact or re-arm", () => {
 				sessionId: "s",
 				leafId: "l",
 				revisionId: "r",
-				checkpointId: "c",
+				checkpointId: "r",
+				snapshotHash: "h",
 				coveredThroughEntryId: "l",
 			}),
 		(error: unknown) => error instanceof DagError && error.code === "handoff_fenced",
@@ -177,7 +205,8 @@ test("an oversized handoff card is refused", () => {
 	const tmp = makeTempDir("pi-dag-handoff-");
 	try {
 		const engine = MemoryEngine.open(tmp.path, "s");
-		engine.update(
+		commit(
+			engine,
 			{
 				operationId: "big",
 				upsertNodes: Array.from({ length: 12 }, (_, index) => ({

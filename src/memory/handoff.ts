@@ -8,7 +8,13 @@ export interface HandoffReview {
 	sessionId: string;
 	leafId: string;
 	revisionId: string;
+	/** D1: identical to `revisionId`. The revision is the checkpoint. */
 	checkpointId: string;
+	/**
+	 * Recomputed from the snapshot that was loaded for the selected revision,
+	 * never read from a stored column (D1/D04).
+	 */
+	snapshotHash: string;
 	coveredThroughEntryId: string;
 }
 
@@ -21,6 +27,8 @@ export interface HandoffCurrent {
 	sessionId: string;
 	leafId: string;
 	revisionId: string | null;
+	/** Recomputed at validation time from the currently loaded snapshot. */
+	snapshotHash: string | null;
 }
 
 function section(title: string, nodes: WorkingNode[]): string {
@@ -60,8 +68,20 @@ export function formatHandoffCard(engine: MemoryEngine): HandoffCard {
 
 export function assertHandoffEligible(engine: MemoryEngine): HandoffCard {
 	const snap = engine.snapshot();
+	if (snap.fault) {
+		throw new DagError(
+			"handoff_refused",
+			`reconstruction reported ${snap.fault.code} for ${snap.fault.revisionId ?? "the branch reference"}: ${snap.fault.detail}. Reduced context is refused; classic compaction is the only fallback, and only on a healthy branch`,
+		);
+	}
 	if (!snap.revisionId || !snap.checkpointId) {
-		throw new DagError("handoff_refused", "handoff requires a committed checkpoint");
+		throw new DagError("handoff_refused", "handoff requires a selected revision");
+	}
+	if (snap.pending) {
+		throw new DagError(
+			"handoff_refused",
+			`operation ${snap.pending.operationId} is prepared and unacknowledged; resolve or quarantine it before a handoff`,
+		);
 	}
 	// A selection the structure cannot decide is not a selection. Refusing here
 	// is what keeps a card from silently presenting one of several candidates
@@ -92,6 +112,9 @@ export function reviewIsFresh(review: HandoffReview, current: HandoffCurrent): b
 	return (
 		review.sessionId === current.sessionId &&
 		review.leafId === current.leafId &&
-		review.revisionId === current.revisionId
+		review.revisionId === current.revisionId &&
+		// The reviewed content itself, recomputed on both sides. Matching ids
+		// alone cannot tell that the bytes behind them are still the same.
+		review.snapshotHash === current.snapshotHash
 	);
 }

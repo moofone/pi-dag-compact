@@ -7,7 +7,6 @@ export const LIMITS = {
 	maxQueryRecords: 20,
 	maxQueryBytes: 8 * 1024,
 	maxIdReads: 8,
-	maxReplayMutations: 32,
 	historyScanBytes: 4 * 1024 * 1024,
 	maxTitle: 120,
 	maxBody: 1000,

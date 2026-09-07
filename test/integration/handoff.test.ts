@@ -9,6 +9,7 @@ import { createIsolatedWorkspace } from "../../src/eval/workspace.ts";
 import { HandoffController } from "../../src/extension/handoff.ts";
 import { MemoryEngine } from "../../src/memory/engine.ts";
 import { formatHandoffCard } from "../../src/memory/handoff.ts";
+import { commit } from "../support/commit.ts";
 
 test("DAG plumbing arm completes three real handoff cuts", async () => {
 	const result = await runClassicScenario({ arm: "dag", keepWorkspace: true });
@@ -56,6 +57,7 @@ test("a correction after review falls back to classic and keeps the correction",
 							sessionId: ctx.sessionManager.getSessionId(),
 							leafId: ctx.sessionManager.getLeafId() ?? "none",
 							revisionId: dag.engine.snapshot().revisionId,
+							snapshotHash: dag.engine.selectedSnapshotHash(),
 						},
 						card.text,
 					);
@@ -70,7 +72,8 @@ test("a correction after review falls back to classic and keeps the correction",
 		);
 		await harness.session.prompt(`# Scenario turn 1\nsetup\n${"alpha ".repeat(2000)}`);
 		await harness.session.prompt(`# Scenario turn 2\nmore\n${"beta ".repeat(2000)}`);
-		dag.engine.update(
+		commit(
+			dag.engine,
 			{
 				operationId: "h1",
 				upsertNodes: [

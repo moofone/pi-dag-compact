@@ -124,7 +124,7 @@ function archiveSome(
 	if (archiveIds.length === 0) return 0;
 	// The engine refuses to archive nonterminal work, so retiring a hypothesis
 	// is now an explicit resolution followed by archival in the same batch.
-	engine.update(
+	const commit = engine.update(
 		{
 			operationId: `arch-${turn}`,
 			setStatus: archiveIds.map((id) => ({ id, status: "stale" as const })),
@@ -132,6 +132,9 @@ function archiveSome(
 		},
 		{ sessionId, leafId },
 	);
+	// The archival revision is published exactly like any other: a commit alone
+	// selects nothing, and the next update would be refused while it is pending.
+	engine.acknowledgeRef(commit.operationId, `${leafId}-arch`);
 	return archiveIds.length;
 }
 
@@ -161,10 +164,8 @@ export function runEngineStress(taskDir: string): {
 		);
 		if (!commit) throw new Error("missing commit");
 		engine.acknowledgeRef(commit.operationId, leafId);
-		refs.push({
-			customType: commit.checkpointId ? "dag_checkpoint_ref" : "dag_revision_ref",
-			data: commit.piRef,
-		});
+		// D1: every revision is its own checkpoint, so every reference is one.
+		refs.push({ customType: "dag_checkpoint_ref", data: commit.piRef });
 	};
 
 	record("leaf-0", () => engine.update(pinBatch("seed"), { sessionId, leafId: "leaf-0" }));
@@ -229,7 +230,7 @@ export function runEngineStress(taskDir: string): {
 	const fork = MemoryEngine.open(taskDir, "stress-fork");
 	if (last) fork.reconstruct([last]);
 	fork.attachFork(sessionId, parentRevision);
-	fork.update(
+	const forkCommit = fork.update(
 		{
 			operationId: "fork-diverge",
 			upsertNodes: [
@@ -238,6 +239,7 @@ export function runEngineStress(taskDir: string): {
 		},
 		{ sessionId: "stress-fork", leafId: "fork-leaf" },
 	);
+	fork.acknowledgeRef(forkCommit.operationId, "fork-entry");
 	const forkDiverged = fork.snapshot().nodes.some((node) => node.id === "fork-only");
 	fork.archivedSearch("H001", 8);
 	fork.release();

@@ -42,15 +42,39 @@ export function registerRecordTools(pi: ExtensionAPI, runtime: ExtensionRuntime)
 					sessionId: ctx.sessionManager.getSessionId(),
 					leafId: ctx.sessionManager.getLeafId() ?? "none",
 				});
-				// An extension append onto an uncertain session is refused, not
-				// attempted: the host would take it into memory either way.
-				const observation = runtime.boundary.guardedAppend(ctx.sessionManager, () =>
-					pi.appendEntry(
-						result.checkpointId ? "dag_checkpoint_ref" : "dag_revision_ref",
-						result.piRef,
-					),
-				);
-				engine.acknowledgeRef(result.operationId, observation.entryId || "appended");
+				// A replay is a receipt, not a publication. Appending a second
+				// reference for it would put two pointers to one revision on the
+				// branch and make recovery ambiguous.
+				if (!result.replayed) {
+					// An extension append onto an uncertain session is refused, not
+					// attempted: the host would take it into memory either way.
+					let observation: { entryId: string; durability: string } | undefined;
+					try {
+						observation = runtime.boundary.guardedAppend(ctx.sessionManager, () =>
+							pi.appendEntry("dag_checkpoint_ref", result.piRef),
+						);
+					} catch (error) {
+						// The commit is durable and the pointer is not. Quarantine it, so
+						// the previous selection stays published and the next accepted
+						// update cannot inherit this one.
+						engine.markUnselected(result.operationId);
+						throw error;
+					}
+					if (observation.durability === "absent_from_file") {
+						// The host says it appended and its own file disagrees. That is a
+						// hole, not a deferral, and it is not an acknowledgement.
+						engine.markUnselected(result.operationId);
+						throw new DagError(
+							"append_uncertain",
+							`reference ${observation.entryId} is not in the session file; the revision was quarantined`,
+						);
+					}
+					engine.acknowledgeRef(
+						result.operationId,
+						observation.entryId || "appended",
+						observation.durability,
+					);
+				}
 				return {
 					content: [
 						{
@@ -59,7 +83,9 @@ export function registerRecordTools(pi: ExtensionAPI, runtime: ExtensionRuntime)
 								revisionId: result.revisionId,
 								revision: result.revision,
 								operationId: result.operationId,
+								// D1: the revision is its own checkpoint.
 								checkpointId: result.checkpointId,
+								replayed: result.replayed,
 								// Creation returns its assigned IDs, so the caller never
 								// has to reread the graph to find what it just made.
 								assignedIds: result.assignedIds,
@@ -67,7 +93,11 @@ export function registerRecordTools(pi: ExtensionAPI, runtime: ExtensionRuntime)
 							}),
 						},
 					],
-					details: { revisionId: result.revisionId, assignedIds: result.assignedIds },
+					details: {
+						revisionId: result.revisionId,
+						assignedIds: result.assignedIds,
+						replayed: result.replayed,
+					},
 				};
 			} catch (error) {
 				return errorResult(error);
@@ -84,6 +114,13 @@ export function registerRecordTools(pi: ExtensionAPI, runtime: ExtensionRuntime)
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
 				const engine = runtime.ensureEngine(ctx);
+				const fault = engine.reconstructionFault;
+				if (fault) {
+					throw new DagError(
+						fault.code,
+						`${fault.detail}. The working set is not published, so a query over it would be a claim about state that could not be verified`,
+					);
+				}
 				const result = queryWorkingSet(engine, params);
 				return {
 					content: [{ type: "text", text: JSON.stringify(result) }],
