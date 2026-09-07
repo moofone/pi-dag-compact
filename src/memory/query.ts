@@ -346,7 +346,7 @@ function readIds(
 			deferred.push(id);
 			continue;
 		}
-		const resolution = resolveId(engine, id, scope);
+		const resolution = resolveId(engine, id, scope, request.origin);
 		const outcome = outcomeFor(resolution);
 		const nextRecords = resolution.node ? [...records, resolution.node] : records;
 		const trial = build([...outcomes, outcome], nextRecords, deferred, bytes + outcome.bytes);
@@ -398,7 +398,7 @@ function readChunk(
 ): QueryResult {
 	const id = request.chunkOf ?? "";
 	const coverage = coverageFor(engine, scope, revisionId);
-	const resolution = resolveId(engine, id, scope);
+	const resolution = resolveId(engine, id, scope, request.origin);
 	if (resolution.status !== "found") {
 		return {
 			scope,

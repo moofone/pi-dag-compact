@@ -69,8 +69,22 @@ export interface QueryCoverage {
 	matched: number;
 }
 
+/**
+ * Origin qualification carried by a typed ID read.
+ *
+ * A reference's origin is part of its identity. Dropping it and answering from
+ * whatever local record happens to share the ID is how a fork ends up citing
+ * another session's measurement as its own.
+ */
+export interface QueryOrigin {
+	taskId?: string;
+	sessionId?: string;
+}
+
 /** The narrow durable-read surface retrieval needs from the engine. */
 export interface RetrievalSource {
+	/** Which task and which origin sessions this source may answer for. */
+	originScope(): { taskId: string; sessionId: string; attachedSessions: string[] };
 	snapshotNodes(): WorkingNode[];
 	snapshotRevisionId(): string | null;
 	archivedHighWater(): number;
@@ -284,12 +298,18 @@ export interface Resolution {
  * history. History scope resolves archived nodes, revisions, checkpoints and
  * research records by indexed exact-ID lookup.
  *
- * TODO(4.3): foreign-origin evidence — an unrelated session ID whose entry ID
- * happens to match locally, and copied origin evidence that outlives the
- * originating transcript — resolves through R3's writer claims and origin/copy
- * mappings, which do not exist yet. Those sub-cases belong to task 4.3.
+ * An origin-qualified request is answered only by the origin it names: this
+ * task, this session, or an origin this session verifiably attached to. Nothing
+ * else falls through to a local same-ID record.
  */
-export function resolveId(source: RetrievalSource, id: string, scope: QueryScope): Resolution {
+export function resolveId(
+	source: RetrievalSource,
+	id: string,
+	scope: QueryScope,
+	origin?: QueryOrigin,
+): Resolution {
+	const foreign = foreignOrigin(source, origin);
+	if (foreign) return { id, type: "unknown", status: "unavailable_source", reason: foreign };
 	const active = source.snapshotNodes().find((node) => node.id === id);
 	if (active) return { id, type: "node", status: "found", node: active };
 	if (scope === "active") {
@@ -340,6 +360,27 @@ export function resolveId(source: RetrievalSource, id: string, scope: QueryScope
 	if (research) return { id, type: "research", status: "found", payload: research };
 
 	return { id, type: "unknown", status: "missing", reason: "no_such_record" };
+}
+
+/**
+ * Why a qualified request cannot be answered here, or null when it can.
+ *
+ * An attachment is the only thing that widens this: a session that recorded an
+ * attachment to an origin has verified provenance for it, and one that did not
+ * is simply a stranger holding the same ID.
+ */
+function foreignOrigin(source: RetrievalSource, origin: QueryOrigin | undefined): string | null {
+	if (!origin || (!origin.taskId && !origin.sessionId)) return null;
+	const scope = source.originScope();
+	if (origin.taskId && origin.taskId !== scope.taskId) return "foreign_task_origin";
+	if (
+		origin.sessionId &&
+		origin.sessionId !== scope.sessionId &&
+		!scope.attachedSessions.includes(origin.sessionId)
+	) {
+		return "foreign_session_origin";
+	}
+	return null;
 }
 
 export function resolutionSize(resolution: Resolution): number {

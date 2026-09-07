@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import type { OriginResolver } from "../memory/engine.ts";
 import { DagError } from "../memory/errors.ts";
 import { ingestRun } from "../memory/experiment.ts";
 import { queryWorkingSet } from "../memory/query.ts";
@@ -148,11 +149,20 @@ export function registerRecordTools(pi: ExtensionAPI, runtime: ExtensionRuntime)
 			byteOffset: Type.Optional(Type.Integer({ minimum: 0 })),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			// The engine owns the verified origin/copy mappings. Without them an
+			// origin-qualified read has nothing to resolve through, and reports
+			// unavailable rather than falling back to a same-ID local entry.
+			let origin: OriginResolver | undefined;
+			try {
+				origin = runtime.ensureEngine(ctx).originResolver();
+			} catch {
+				// No store to consult. Foreign origins are simply unresolvable here.
+			}
 			const resolved = resolveSessionEvidence(
 				ctx.sessionManager,
 				params.sessionId,
 				params.entryId,
-				{ byteOffset: params.byteOffset ?? 0 },
+				{ byteOffset: params.byteOffset ?? 0, ...(origin ? { origin } : {}) },
 			);
 			if ("unavailable" in resolved) {
 				return {

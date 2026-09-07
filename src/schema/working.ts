@@ -130,6 +130,17 @@ export const QueryRequestSchema = Type.Object({
 	scope: Type.Union([Type.Literal("active"), Type.Literal("history")]),
 	q: Type.Optional(Type.String()),
 	ids: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 8 })),
+	/**
+	 * Where the requested IDs came from. A reference from another research task
+	 * or another session is answered by that origin or reported unavailable; it
+	 * is never satisfied by a local record that happens to share the ID.
+	 */
+	origin: Type.Optional(
+		Type.Object({
+			taskId: Type.Optional(Type.String({ minLength: 1 })),
+			sessionId: Type.Optional(Type.String({ minLength: 1 })),
+		}),
+	),
 	cursor: Type.Optional(Type.String()),
 	chunkOf: Type.Optional(Type.String({ minLength: 1 })),
 	chunkOffset: Type.Optional(Type.Integer({ minimum: 0 })),

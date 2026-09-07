@@ -36,8 +36,34 @@ test("origin-qualified copied entries resolve on the fork branch", () => {
 		},
 		"origin",
 		"origin-entry",
+		{
+			// R3: the copy has to be recorded. Pi's fork keeps entry IDs, so
+			// "an entry with that ID is on my branch" is true for every origin in
+			// existence and proves nothing on its own.
+			origin: {
+				copiedEntryId: (originSessionId, originEntryId) =>
+					originSessionId === "origin" && originEntryId === "origin-entry"
+						? "origin-entry"
+						: undefined,
+				sourceTranscript: () => undefined,
+			},
+		},
 	);
 	assert.equal("entry" in resolved && resolved.entry.id, "origin-entry");
+});
+
+test("an unrecorded origin does not resolve from a same-ID local entry", () => {
+	const copied = entry("origin-entry");
+	const resolved = resolveSessionEvidence(
+		{
+			getSessionId: () => "fork",
+			getBranch: () => [copied],
+			getEntry: (id) => (id === copied.id ? copied : undefined),
+		},
+		"origin",
+		"origin-entry",
+	);
+	assert.deepEqual(resolved, { unavailable: true, reason: "uncopied_foreign_entry" });
 });
 
 test("uncopied foreign evidence is unavailable", () => {

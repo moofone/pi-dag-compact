@@ -184,7 +184,10 @@ test("D04 an imported chain and a fork point reconstruct exactly", () => {
 		const third = origin.update(step(3), branchAt("origin", "leaf-3"));
 		origin.acknowledgeRef(third.operationId, "e3");
 		const forkPointHash = (() => {
-			const probe = MemoryEngine.open(tmp.path, "origin");
+			// A probe attaches as a reader. Opening a second writer over a live
+			// owner's store is exactly what R3's claim refuses, and the probe has no
+			// business taking ownership from the writer it is observing.
+			const probe = MemoryEngine.open(tmp.path, "origin", "default", { role: "reader" });
 			probe.reconstruct([ref(first.piRef), ref(second.piRef)]);
 			const hash = loadedHash(probe);
 			probe.close();
