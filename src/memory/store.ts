@@ -2,6 +2,40 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { WorkingEdge, WorkingNode } from "../schema/working.ts";
+import type { WriterClaim } from "./claim.ts";
+
+export interface ClaimEventRow {
+	eventId: string;
+	taskId: string;
+	claimToken: string;
+	sessionId: string;
+	kind: string;
+	detail: string;
+	createdAt: number;
+}
+
+/**
+ * One verified copy of an origin entry.
+ *
+ * Pi's fork copies entries keeping their IDs, so the mapping is usually
+ * identity — and that is precisely why it has to be recorded. Without it a
+ * same-ID lookup answers every origin, including sessions this one never met.
+ */
+export interface OriginEntryRow {
+	sessionId: string;
+	originSessionId: string;
+	originEntryId: string;
+	localEntryId: string;
+	entryHash: string;
+	verifiedBy: string;
+}
+
+export interface AttachmentRow {
+	attachmentId: string;
+	sessionId: string;
+	originSessionId: string | null;
+	inheritedRevisionId: string | null;
+}
 
 /**
  * Explicit operation states.
@@ -81,8 +115,6 @@ export interface ArchivedRow {
 export type ArchiveKey = [string, string];
 
 const SCHEMA = `
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;
 CREATE TABLE IF NOT EXISTS task_meta (
   task_id TEXT PRIMARY KEY,
   schema_version INTEGER NOT NULL,
@@ -136,6 +168,41 @@ CREATE TABLE IF NOT EXISTS attachments (
   inherited_revision_id TEXT,
   created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS writer_claims (
+  task_id TEXT PRIMARY KEY,
+  claim_token TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  host TEXT NOT NULL,
+  pid INTEGER NOT NULL,
+  process_started_at INTEGER NOT NULL,
+  claimed_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS writer_claim_events (
+  event_id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  claim_token TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  detail TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS origin_entries (
+  session_id TEXT NOT NULL,
+  origin_session_id TEXT NOT NULL,
+  origin_entry_id TEXT NOT NULL,
+  local_entry_id TEXT NOT NULL,
+  entry_hash TEXT NOT NULL,
+  verified_by TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (session_id, origin_session_id, origin_entry_id)
+);
+CREATE TABLE IF NOT EXISTS origin_sources (
+  session_id TEXT NOT NULL,
+  origin_session_id TEXT NOT NULL,
+  transcript_path TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (session_id, origin_session_id)
+);
 CREATE TABLE IF NOT EXISTS experiment_runs (
   run_id TEXT PRIMARY KEY,
   operation_id TEXT NOT NULL,
@@ -152,6 +219,21 @@ export class SqliteStore {
 	constructor(path: string) {
 		mkdirSync(dirname(path), { recursive: true });
 		this.db = new DatabaseSync(path);
+		// Before anything that takes a lock. Two processes opening the same store
+		// at once must queue behind SQLite's write lock rather than fail with
+		// SQLITE_BUSY. This bounds how long a writer waits for a *lock*; it is
+		// not, and must never become, an expiry on ownership itself.
+		this.db.exec("PRAGMA busy_timeout = 10000");
+		try {
+			// SQLite refuses a journal-mode switch outright while another
+			// connection is open, and `busy_timeout` does not retry it. The mode is
+			// a property of the file, so losing this race just means the connection
+			// that won it already chose.
+			this.db.exec("PRAGMA journal_mode = WAL");
+		} catch {
+			// Another connection is mid-open. Its setting is the file's setting.
+		}
+		this.db.exec("PRAGMA synchronous = NORMAL");
 		this.db.exec(SCHEMA);
 		this.addMissingColumns();
 		this.reduceCheckpointsToView();
@@ -243,6 +325,191 @@ export class SqliteStore {
 
 	releaseWriter(taskId: string): void {
 		this.db.prepare("UPDATE task_meta SET writer_session_id = NULL WHERE task_id = ?").run(taskId);
+	}
+
+	// --- writer claims ------------------------------------------------------
+
+	getClaim(taskId: string): WriterClaim | undefined {
+		const row = this.db.prepare("SELECT * FROM writer_claims WHERE task_id = ?").get(taskId) as
+			| Record<string, unknown>
+			| undefined;
+		if (!row) return undefined;
+		return {
+			taskId: String(row.task_id),
+			claimToken: String(row.claim_token),
+			sessionId: String(row.session_id),
+			host: String(row.host),
+			pid: Number(row.pid),
+			startedAt: Number(row.process_started_at),
+			claimedAt: Number(row.claimed_at),
+		};
+	}
+
+	insertClaim(claim: WriterClaim): void {
+		this.db
+			.prepare(
+				`INSERT INTO writer_claims
+         (task_id, claim_token, session_id, host, pid, process_started_at, claimed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			)
+			.run(
+				claim.taskId,
+				claim.claimToken,
+				claim.sessionId,
+				claim.host,
+				claim.pid,
+				claim.startedAt,
+				claim.claimedAt,
+			);
+	}
+
+	/**
+	 * Drop a claim only when the caller still holds it.
+	 *
+	 * The token is in the WHERE clause, so a handle whose claim was already
+	 * released — or recovered by someone else — deletes nothing instead of
+	 * releasing the current owner's store.
+	 */
+	deleteClaim(taskId: string, claimToken: string): boolean {
+		const result = this.db
+			.prepare("DELETE FROM writer_claims WHERE task_id = ? AND claim_token = ?")
+			.run(taskId, claimToken);
+		return Number(result.changes) > 0;
+	}
+
+	recordClaimEvent(
+		eventId: string,
+		taskId: string,
+		claimToken: string,
+		sessionId: string,
+		kind: "acquired" | "released" | "recovered" | "refused",
+		detail = "",
+	): void {
+		this.db
+			.prepare(
+				`INSERT INTO writer_claim_events
+         (event_id, task_id, claim_token, session_id, kind, detail, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			)
+			.run(eventId, taskId, claimToken, sessionId, kind, detail, Date.now());
+	}
+
+	listClaimEvents(taskId: string, kind?: string): ClaimEventRow[] {
+		const rows = (
+			kind
+				? this.db
+						.prepare(
+							"SELECT * FROM writer_claim_events WHERE task_id = ? AND kind = ? ORDER BY created_at",
+						)
+						.all(taskId, kind)
+				: this.db
+						.prepare("SELECT * FROM writer_claim_events WHERE task_id = ? ORDER BY created_at")
+						.all(taskId)
+		) as Array<Record<string, unknown>>;
+		return rows.map((row) => ({
+			eventId: String(row.event_id),
+			taskId: String(row.task_id),
+			claimToken: String(row.claim_token),
+			sessionId: String(row.session_id),
+			kind: String(row.kind),
+			detail: String(row.detail ?? ""),
+			createdAt: Number(row.created_at),
+		}));
+	}
+
+	// --- origin and copy mappings -------------------------------------------
+
+	insertOriginEntry(row: OriginEntryRow): void {
+		this.db
+			.prepare(
+				`INSERT OR IGNORE INTO origin_entries
+         (session_id, origin_session_id, origin_entry_id, local_entry_id, entry_hash, verified_by, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			)
+			.run(
+				row.sessionId,
+				row.originSessionId,
+				row.originEntryId,
+				row.localEntryId,
+				row.entryHash,
+				row.verifiedBy,
+				Date.now(),
+			);
+	}
+
+	getOriginEntry(
+		sessionId: string,
+		originSessionId: string,
+		originEntryId: string,
+	): OriginEntryRow | undefined {
+		const row = this.db
+			.prepare(
+				`SELECT * FROM origin_entries
+         WHERE session_id = ? AND origin_session_id = ? AND origin_entry_id = ?`,
+			)
+			.get(sessionId, originSessionId, originEntryId) as Record<string, unknown> | undefined;
+		if (!row) return undefined;
+		return {
+			sessionId: String(row.session_id),
+			originSessionId: String(row.origin_session_id),
+			originEntryId: String(row.origin_entry_id),
+			localEntryId: String(row.local_entry_id),
+			entryHash: String(row.entry_hash),
+			verifiedBy: String(row.verified_by),
+		};
+	}
+
+	countOriginEntries(sessionId: string, originSessionId: string): number {
+		const row = this.db
+			.prepare(
+				"SELECT count(*) AS n FROM origin_entries WHERE session_id = ? AND origin_session_id = ?",
+			)
+			.get(sessionId, originSessionId) as { n: number };
+		return Number(row.n);
+	}
+
+	putOriginSource(sessionId: string, originSessionId: string, transcriptPath: string): void {
+		this.db
+			.prepare(
+				`INSERT INTO origin_sources (session_id, origin_session_id, transcript_path, created_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(session_id, origin_session_id) DO UPDATE SET transcript_path = excluded.transcript_path`,
+			)
+			.run(sessionId, originSessionId, transcriptPath, Date.now());
+	}
+
+	getOriginSource(sessionId: string, originSessionId: string): string | undefined {
+		const row = this.db
+			.prepare(
+				"SELECT transcript_path FROM origin_sources WHERE session_id = ? AND origin_session_id = ?",
+			)
+			.get(sessionId, originSessionId) as { transcript_path?: string } | undefined;
+		return row?.transcript_path;
+	}
+
+	getAttachment(sessionId: string, originSessionId: string): AttachmentRow | undefined {
+		const row = this.db
+			.prepare("SELECT * FROM attachments WHERE session_id = ? AND origin_session_id = ?")
+			.get(sessionId, originSessionId) as Record<string, unknown> | undefined;
+		if (!row) return undefined;
+		return {
+			attachmentId: String(row.attachment_id),
+			sessionId: String(row.session_id),
+			originSessionId: (row.origin_session_id as string | null) ?? null,
+			inheritedRevisionId: (row.inherited_revision_id as string | null) ?? null,
+		};
+	}
+
+	listAttachments(sessionId: string): AttachmentRow[] {
+		const rows = this.db
+			.prepare("SELECT * FROM attachments WHERE session_id = ? ORDER BY created_at")
+			.all(sessionId) as Array<Record<string, unknown>>;
+		return rows.map((row) => ({
+			attachmentId: String(row.attachment_id),
+			sessionId: String(row.session_id),
+			originSessionId: (row.origin_session_id as string | null) ?? null,
+			inheritedRevisionId: (row.inherited_revision_id as string | null) ?? null,
+		}));
 	}
 
 	getOperation(operationId: string): OperationRow | undefined {

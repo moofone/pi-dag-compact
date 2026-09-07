@@ -316,6 +316,12 @@ export async function createClassicHarness(
 		cleanup: async () => {
 			clearInterval(rssTimer);
 			persist.restore();
+			// `AgentSession.dispose()` does not emit `session_shutdown` — only the
+			// app layer's session replacement does, which R1 recorded and L02
+			// exercises through the real `AgentSessionRuntime`. This harness stands
+			// in for that layer, so it performs the orderly detach the host would,
+			// and the writer claim is released instead of abandoned.
+			dagRuntime?.shutdown();
 			session.dispose();
 		},
 	};

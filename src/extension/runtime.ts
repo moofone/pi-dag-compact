@@ -1,11 +1,70 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { existsSync, readFileSync } from "node:fs";
+import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { OwnerId, ScheduleDecision, ScheduleKind } from "../host/admission.ts";
+import { sha256 } from "../memory/canonical.ts";
+import type { CopiedOriginEntry } from "../memory/engine.ts";
 import { MemoryEngine } from "../memory/engine.ts";
 import { DagError } from "../memory/errors.ts";
 import { HostBoundary } from "./boundary.ts";
 import { resolveConfig } from "./config.ts";
 import { HandoffController } from "./handoff.ts";
 import { collectPiRefs } from "./session.ts";
+
+/** What a boot could not do, kept so `/dag` can say why rather than look empty. */
+export interface OwnershipStatus {
+	code: string;
+	detail: string;
+}
+
+interface ForkAncestry {
+	originSessionId: string;
+	originSessionFile: string;
+	copied: CopiedOriginEntry[];
+}
+
+/**
+ * Read the origin this session was forked from, out of its own header.
+ *
+ * Pi records the parent session's *file* in the fork's header and copies its
+ * entries keeping their IDs. The origin's session ID lives in the parent file's
+ * own header line, which is where the real origin identity comes from — never a
+ * placeholder, and never the fork's own ID.
+ */
+function readForkAncestry(sessionManager: {
+	getHeader?: () => { parentSession?: string } | null;
+	getBranch(): readonly SessionEntry[];
+}): ForkAncestry | null {
+	const parentFile = sessionManager.getHeader?.()?.parentSession;
+	if (!parentFile || !existsSync(parentFile)) return null;
+	let originSessionId: string | undefined;
+	const originEntryIds = new Set<string>();
+	for (const line of readFileSync(parentFile, "utf8").split("\n")) {
+		if (line.trim().length === 0) continue;
+		try {
+			const parsed = JSON.parse(line) as { type?: string; id?: unknown };
+			if (parsed.type === "session" && typeof parsed.id === "string") {
+				originSessionId = parsed.id;
+				continue;
+			}
+			if (typeof parsed.id === "string") originEntryIds.add(parsed.id);
+		} catch {
+			// A partial trailing line is not an entry, and is not evidence of one.
+		}
+	}
+	if (!originSessionId) return null;
+	// A copy is recorded only for an entry this branch holds *and* the origin
+	// transcript actually contained. Same-ID-on-my-branch alone is not evidence.
+	const copied: CopiedOriginEntry[] = [];
+	for (const entry of sessionManager.getBranch()) {
+		if (!originEntryIds.has(entry.id)) continue;
+		copied.push({
+			originEntryId: entry.id,
+			localEntryId: entry.id,
+			entryHash: sha256(JSON.stringify(entry)),
+		});
+	}
+	return { originSessionId, originSessionFile: parentFile, copied };
+}
 
 export interface ExtensionRuntime {
 	engine: MemoryEngine | undefined;
@@ -23,6 +82,11 @@ export interface ExtensionRuntime {
 	 * receives a context calls this before it consults the fence or the ledger.
 	 */
 	observeContext(ctx: ExtensionContext): void;
+	/**
+	 * Why this session holds no engine, when it holds none. A live owner keeps
+	 * its store, and every public surface says so rather than looking empty.
+	 */
+	ownership: OwnershipStatus | null;
 	/** The goal owner this session's scheduled work is bound to, if configured. */
 	owner: OwnerId | undefined;
 	bindOwner(owner: OwnerId, allowance: number): void;
@@ -35,6 +99,7 @@ export interface ExtensionRuntime {
 export function createRuntime(pi: ExtensionAPI): ExtensionRuntime {
 	let engine: MemoryEngine | undefined;
 	let owner: OwnerId | undefined;
+	let ownership: OwnershipStatus | null = null;
 	const handoff = new HandoffController();
 	const boundary = new HostBoundary();
 
@@ -44,6 +109,11 @@ export function createRuntime(pi: ExtensionAPI): ExtensionRuntime {
 		if (config.taskDir) boundary.bind(config.taskDir);
 	};
 
+	/**
+	 * Orderly detach. `close()` releases the claim under the handle's own token,
+	 * so a shutdown hands ownership back rather than abandoning it, and a handle
+	 * whose claim already moved on releases nothing.
+	 */
 	const shutdown = (): void => {
 		engine?.close();
 		engine = undefined;
@@ -58,7 +128,22 @@ export function createRuntime(pi: ExtensionAPI): ExtensionRuntime {
 		// the Pi session: the Pi session is the thing whose durability is in doubt.
 		boundary.bind(config.taskDir);
 		const sessionId = ctx.sessionManager.getSessionId();
-		engine = MemoryEngine.open(config.taskDir, sessionId);
+		try {
+			// Explicit stale-owner recovery, and only that: a claim is taken from a
+			// previous owner solely when that owner is verifiably gone. A live owner
+			// keeps its store and this session gets no engine at all.
+			engine = MemoryEngine.open(config.taskDir, sessionId, "default", {
+				recoverStaleWriter: true,
+			});
+			ownership = null;
+		} catch (error) {
+			engine = undefined;
+			ownership = {
+				code: error instanceof DagError ? error.code : "open_failed",
+				detail: `${error instanceof Error ? error.message : String(error)} (during ${reason})`,
+			};
+			return;
+		}
 		try {
 			engine.reconstruct(collectPiRefs(ctx.sessionManager));
 		} catch {
@@ -68,8 +153,19 @@ export function createRuntime(pi: ExtensionAPI): ExtensionRuntime {
 			// `dag_update` and to the handoff, which read the fault instead.
 		}
 		if (engine.reconstructionFault) return;
-		if (reason === "fork") {
-			engine.attachFork("origin", engine.snapshot().revisionId);
+		// Provenance is recorded from the fork's own header, so it survives a
+		// restart and does not depend on having witnessed the fork event.
+		const ancestry = readForkAncestry(ctx.sessionManager);
+		if (ancestry) {
+			try {
+				engine.attachFork(ancestry.originSessionId, engine.snapshot().revisionId, {
+					originSessionFile: ancestry.originSessionFile,
+				});
+				engine.recordCopiedOriginEntries(ancestry.originSessionId, ancestry.copied);
+			} catch {
+				// Provenance is immutable: a conflicting re-attach is refused and the
+				// recorded original stands. A boot never rewrites it.
+			}
 		}
 		// A fence loaded from the extension's own store outlives the process it was
 		// raised in. Reconciling pending refs into a session whose durability is
@@ -111,6 +207,9 @@ export function createRuntime(pi: ExtensionAPI): ExtensionRuntime {
 		handoff,
 		boundary,
 		observeContext,
+		get ownership() {
+			return ownership;
+		},
 		get owner() {
 			return owner;
 		},
@@ -142,8 +241,11 @@ export function createRuntime(pi: ExtensionAPI): ExtensionRuntime {
 				);
 			}
 			boot(ctx, "startup");
-			if (!engine) throw new DagError("missing_task_dir", "failed to open task store");
-			return engine;
+			if (engine) return engine;
+			// A refused claim is a fact about another live writer, not a missing
+			// directory, and it is reported as itself.
+			if (ownership) throw new DagError(ownership.code, ownership.detail);
+			throw new DagError("missing_task_dir", "failed to open task store");
 		},
 		shutdown,
 	};

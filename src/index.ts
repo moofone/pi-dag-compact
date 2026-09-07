@@ -56,6 +56,15 @@ function build(pi: ExtensionAPI, options: PiDagCompactOptions): void {
 			}
 			try {
 				const engine = runtime.ensureEngine(ctx);
+				const recovered = engine.recoveredStaleClaim;
+				if (recovered) {
+					// An explicit recovery is reported, never silent: the previous
+					// owner's work is still in the store and someone has to know.
+					ctx.ui.notify(
+						`recovered the writer claim from session ${recovered.recoveredSessionId} (process ${recovered.owner.host}/${recovered.owner.pid} is absent)`,
+						"warning",
+					);
+				}
 				const fault = engine.reconstructionFault;
 				if (fault) {
 					// Nothing is published, and saying so is the point: an empty status

@@ -15,6 +15,13 @@ import {
 	WorkingNodeSchema,
 } from "../schema/working.ts";
 import { canonicalBatch, canonicalSnapshot, edgeKey, newId, sha256 } from "./canonical.ts";
+import {
+	currentProcess,
+	type OwnerLiveness,
+	ownerLiveness,
+	type RecoveryEvidence,
+	type WriterClaim,
+} from "./claim.ts";
 import { DagError } from "./errors.ts";
 import { cloneEdges, cloneNodes, validateActiveSet } from "./graph.ts";
 import { LIMITS, utf8Bytes } from "./limits.ts";
@@ -31,11 +38,63 @@ import {
 import {
 	type ArchivedRow,
 	type ArchiveKey,
+	type AttachmentRow,
 	parseGraph,
 	type RevisionRow,
 	type RevisionStatus,
 	SqliteStore,
 } from "./store.ts";
+
+export type EngineRole = "writer" | "reader";
+
+export interface OpenOptions {
+	/**
+	 * `writer` (default) acquires the exclusive claim. `reader` attaches to the
+	 * durable history without taking ownership and refuses every mutation, so a
+	 * probe can never displace the writer it is observing.
+	 */
+	role?: EngineRole;
+	/**
+	 * Permit an explicit stale-owner recovery. It only ever succeeds when the
+	 * recorded owner is verifiably gone; there is no time-based reclaim.
+	 */
+	recoverStaleWriter?: boolean;
+}
+
+/**
+ * What a session inherited, and from where.
+ *
+ * The origin session ID is the real one, read from the fork's own header. A
+ * placeholder here would make every later origin-qualified lookup a guess.
+ */
+export interface ForkOrigin {
+	inheritedRevisionId: string | null;
+	originSessionFile?: string | null;
+	forkEntryId?: string | null;
+}
+
+/** One verified copied entry, as the fork observed it. */
+export interface CopiedOriginEntry {
+	originEntryId: string;
+	localEntryId: string;
+	entryHash: string;
+}
+
+/**
+ * The narrow origin surface `session_read` needs. It answers two questions and
+ * neither of them is "is there a local entry with this id".
+ */
+export interface OriginResolver {
+	copiedEntryId(originSessionId: string, originEntryId: string): string | undefined;
+	sourceTranscript(originSessionId: string): string | undefined;
+}
+
+/** Origin qualification for a typed ID read. */
+export interface OriginScope {
+	taskId: string;
+	sessionId: string;
+	attachedSessions: string[];
+}
 
 export interface BranchContext {
 	sessionId: string;
@@ -144,30 +203,193 @@ export class MemoryEngine {
 	private candidate: RevisionRow | null = null;
 	private fault: ReconstructionFault | null = null;
 
+	/** This handle's process-instance claim token, or null for a reader. */
+	private token: string | null = null;
+	private role: EngineRole = "writer";
+	private recovered: RecoveryEvidence | null = null;
+	private closed = false;
+
 	private constructor(taskId: string, sessionId: string, store: SqliteStore) {
 		this.taskId = taskId;
 		this.sessionId = sessionId;
 		this.store = store;
 	}
 
-	static open(taskDir: string, sessionId: string, taskId = "default"): MemoryEngine {
+	/**
+	 * Acquire the writer claim, or attach as a reader.
+	 *
+	 * The claim is taken inside one immediate transaction, so the read of the
+	 * current owner and the write of the new one cannot be interleaved by another
+	 * process. A read-then-write check would let two competitors in.
+	 */
+	static open(
+		taskDir: string,
+		sessionId: string,
+		taskId = "default",
+		options: OpenOptions = {},
+	): MemoryEngine {
 		const store = new SqliteStore(join(taskDir, "memory.sqlite"));
-		const writer = store.getWriter(taskId);
-		if (writer && writer !== sessionId) {
+		const engine = new MemoryEngine(taskId, sessionId, store);
+		if (options.role === "reader") {
+			engine.role = "reader";
+			return engine;
+		}
+		try {
+			engine.acquire(options.recoverStaleWriter === true);
+		} catch (error) {
 			store.close();
-			throw new DagError("competing_writer", `task is owned by session ${writer}`);
+			throw error;
 		}
 		store.ensureTask(taskId, sessionId);
-		return new MemoryEngine(taskId, sessionId, store);
+		return engine;
+	}
+
+	/** The token this handle holds, or null when it holds no claim. */
+	get claimToken(): string | null {
+		return this.token;
+	}
+
+	/** The stale claim this handle recovered from, when it recovered one. */
+	get recoveredStaleClaim(): RecoveryEvidence | null {
+		return this.recovered;
+	}
+
+	/** The claim currently on record for this task, whoever holds it. */
+	writerClaim(): WriterClaim | null {
+		return this.store.getClaim(this.taskId) ?? null;
+	}
+
+	private acquire(recoverStale: boolean): void {
+		const self = currentProcess();
+		const token = newId("claim");
+		const outcome = this.store.transaction((): { liveness: OwnerLiveness } | null => {
+			const existing = this.store.getClaim(this.taskId);
+			if (existing) {
+				const liveness = ownerLiveness(existing, self);
+				if (liveness !== "dead") return { liveness };
+				if (!recoverStale) return { liveness };
+				// Explicit, verified stale-owner recovery: the claim is only taken
+				// because the kernel says the owner does not exist, never because
+				// enough time has passed.
+				this.store.deleteClaim(existing.taskId, existing.claimToken);
+				this.store.recordClaimEvent(
+					newId("wce"),
+					this.taskId,
+					existing.claimToken,
+					existing.sessionId,
+					"recovered",
+					`owner ${existing.host}/${existing.pid} is absent; recovered by ${this.sessionId}`,
+				);
+				this.recovered = {
+					recoveredToken: existing.claimToken,
+					recoveredSessionId: existing.sessionId,
+					owner: { host: existing.host, pid: existing.pid, startedAt: existing.startedAt },
+					liveness,
+					verifiedBy: "process_absent",
+				};
+			}
+			this.store.insertClaim({
+				taskId: this.taskId,
+				claimToken: token,
+				sessionId: this.sessionId,
+				host: self.host,
+				pid: self.pid,
+				startedAt: self.startedAt,
+				claimedAt: Date.now(),
+			});
+			this.store.recordClaimEvent(
+				newId("wce"),
+				this.taskId,
+				token,
+				this.sessionId,
+				"acquired",
+				this.recovered ? "after stale-owner recovery" : "",
+			);
+			return null;
+		});
+		if (outcome) {
+			const held = this.store.getClaim(this.taskId);
+			this.store.recordClaimEvent(
+				newId("wce"),
+				this.taskId,
+				held?.claimToken ?? "unknown",
+				this.sessionId,
+				"refused",
+				outcome.liveness,
+			);
+			if (outcome.liveness === "dead") {
+				throw new DagError(
+					"stale_writer_claim",
+					`task is claimed by a process that is gone (${held?.host}/${held?.pid}); recovery must be explicit`,
+				);
+			}
+			throw new DagError(
+				"competing_writer",
+				`task is owned by session ${held?.sessionId ?? "(unknown)"} on ${held?.host ?? "?"}/${held?.pid ?? "?"} (${outcome.liveness})`,
+			);
+		}
+		this.token = token;
+		this.role = "writer";
+	}
+
+	/**
+	 * Release ownership without closing the handle.
+	 *
+	 * This is the orderly detach the lifecycle performs on shutdown, switch and
+	 * fork. The token is validated by the delete itself, so a handle whose claim
+	 * has already moved on releases nothing and the current owner keeps its store.
+	 */
+	detach(): void {
+		if (!this.token) return;
+		const released = this.store.deleteClaim(this.taskId, this.token);
+		if (released) {
+			this.store.releaseWriter(this.taskId);
+			this.store.recordClaimEvent(
+				newId("wce"),
+				this.taskId,
+				this.token,
+				this.sessionId,
+				"released",
+			);
+		}
+		this.token = null;
+		this.role = "reader";
 	}
 
 	close(): void {
+		if (this.closed) return;
+		this.detach();
+		this.closed = true;
 		this.store.close();
 	}
 
 	release(): void {
-		this.store.releaseWriter(this.taskId);
 		this.close();
+	}
+
+	/**
+	 * Every mutation validates the token, not just the session name.
+	 *
+	 * A handle that was detached, or whose claim was recovered by someone else,
+	 * still points at a perfectly good database. Refusing here is what stops it
+	 * from writing into a store it no longer owns.
+	 */
+	private assertWriter(): void {
+		if (this.role !== "writer" || !this.token) {
+			throw new DagError(
+				"not_writer",
+				`session ${this.sessionId} is attached to ${this.taskId} as a reader and may not mutate it`,
+			);
+		}
+		const held = this.store.getClaim(this.taskId);
+		if (held?.claimToken !== this.token) {
+			throw new DagError(
+				"stale_claim",
+				`this handle's writer claim on ${this.taskId} is no longer current${
+					held ? `; it is now held by session ${held.sessionId}` : " and the task is unclaimed"
+				}`,
+			);
+		}
 	}
 
 	/**
@@ -218,6 +440,7 @@ export class MemoryEngine {
 	}
 
 	update(batchInput: MutationBatch, branch: BranchContext): CommitResult {
+		this.assertWriter();
 		const batch = parseWithSchema(MutationBatchSchema, batchInput, "dag_update");
 		const batchJson = canonicalBatch(batch);
 		if (utf8Bytes(batchJson) > LIMITS.maxBatchBytes) {
@@ -339,6 +562,7 @@ export class MemoryEngine {
 	 * published onto the position it was prepared against.
 	 */
 	acknowledgeRef(operationId: string, entryId: string, durability?: string): void {
+		this.assertWriter();
 		const row = this.store.getRevisionByOperation(operationId);
 		if (!row) throw new DagError("unknown_revision", `no revision for operation ${operationId}`);
 		if (row.status === "unselected") return;
@@ -369,6 +593,7 @@ export class MemoryEngine {
 	 * allowed to leak into whatever is published next.
 	 */
 	markUnselected(operationId: string): void {
+		this.assertWriter();
 		const row = this.store.getRevisionByOperation(operationId);
 		if (!row) return;
 		this.store.setRevisionStatus(row.revisionId, "unselected", row.piEntryId);
@@ -447,7 +672,8 @@ export class MemoryEngine {
 				revisionId: row.revisionId,
 			});
 		}
-		if (row.status === "prepared") {
+		// A reader may look at what the branch selects; it may not reconcile it.
+		if (row.status === "prepared" && this.role === "writer") {
 			// The pointer is on the branch and the acknowledgement is missing. The
 			// pointer is the authority, so it reconciles here — once, and only onto
 			// the ancestry the revision was prepared against.
@@ -481,6 +707,7 @@ export class MemoryEngine {
 		branch: BranchContext,
 		appendRef: (ref: PiRefData, checkpoint: boolean) => string | undefined,
 	): void {
+		this.assertWriter();
 		for (const row of this.store.listPendingForSession(branch.sessionId)) {
 			if (row.expectedBranchLeafId !== branch.leafId) continue;
 			const publishedId = this.published?.row.revisionId ?? null;
@@ -505,6 +732,7 @@ export class MemoryEngine {
 	 * content is a conflict, never a silent second record.
 	 */
 	ingestResearchRecord(input: ResearchIngestInput): ResearchIngestResult {
+		this.assertWriter();
 		const payloadJson = JSON.stringify(input.payload);
 		if (utf8Bytes(payloadJson) > LIMITS.maxEventBytes) {
 			throw new DagError(
@@ -555,11 +783,102 @@ export class MemoryEngine {
 		}));
 	}
 
-	attachFork(originSessionId: string, inheritedRevisionId: string | null): void {
+	/**
+	 * Record what this session inherited, and from which real origin.
+	 *
+	 * The mapping is immutable: attaching the same origin twice with the same
+	 * inherited revision is a no-op, and attaching it again with a different one
+	 * is a conflict rather than a silent rewrite of provenance.
+	 */
+	attachFork(
+		originSessionId: string,
+		inheritedRevisionId: string | null,
+		origin: Omit<ForkOrigin, "inheritedRevisionId"> = {},
+	): void {
+		this.assertWriter();
+		const existing = this.store.getAttachment(this.sessionId, originSessionId);
+		if (existing) {
+			if ((existing.inheritedRevisionId ?? null) !== inheritedRevisionId) {
+				throw new DagError(
+					"origin_conflict",
+					`session ${this.sessionId} already attached to ${originSessionId} at revision ${
+						existing.inheritedRevisionId ?? "(none)"
+					}; provenance is immutable`,
+				);
+			}
+			return;
+		}
 		this.store.insertAttachment(newId("att"), this.sessionId, originSessionId, inheritedRevisionId);
+		if (origin.originSessionFile) {
+			this.store.putOriginSource(this.sessionId, originSessionId, origin.originSessionFile);
+		}
+	}
+
+	/**
+	 * Record the entries this session verifiably holds a copy of.
+	 *
+	 * Recorded once, at the moment the copy is observed. Later resolution reads
+	 * this table, so removing the original transcript cannot take the evidence
+	 * with it, and a session that never copied an entry cannot pretend it did.
+	 */
+	recordCopiedOriginEntries(originSessionId: string, entries: CopiedOriginEntry[]): void {
+		this.assertWriter();
+		this.store.transaction(() => {
+			for (const entry of entries) {
+				this.store.insertOriginEntry({
+					sessionId: this.sessionId,
+					originSessionId,
+					originEntryId: entry.originEntryId,
+					localEntryId: entry.localEntryId,
+					entryHash: entry.entryHash,
+					verifiedBy: "fork_copy",
+				});
+			}
+		});
+	}
+
+	/** Attach a source transcript for evidence this session never copied. */
+	attachOriginSource(originSessionId: string, transcriptPath: string): void {
+		this.assertWriter();
+		this.store.putOriginSource(this.sessionId, originSessionId, transcriptPath);
+	}
+
+	copiedOriginEntryCount(originSessionId: string): number {
+		return this.store.countOriginEntries(this.sessionId, originSessionId);
+	}
+
+	attachments(): AttachmentRow[] {
+		return this.store.listAttachments(this.sessionId);
+	}
+
+	/**
+	 * The origin surface `session_read` consults. Note what it is not: it never
+	 * offers a bare local-entry lookup, so a caller cannot accidentally satisfy a
+	 * foreign origin with a same-id local entry.
+	 */
+	originResolver(): OriginResolver {
+		return {
+			copiedEntryId: (originSessionId, originEntryId) =>
+				this.store.getOriginEntry(this.sessionId, originSessionId, originEntryId)?.localEntryId,
+			sourceTranscript: (originSessionId) =>
+				this.store.getOriginSource(this.sessionId, originSessionId),
+		};
+	}
+
+	/** Which task and which sessions this engine may answer for. */
+	originScope(): OriginScope {
+		return {
+			taskId: this.taskId,
+			sessionId: this.sessionId,
+			attachedSessions: this.store
+				.listAttachments(this.sessionId)
+				.map((row) => row.originSessionId)
+				.filter((id): id is string => id !== null),
+		};
 	}
 
 	beginRun(runId: string, operationId: string, payload: unknown): void {
+		this.assertWriter();
 		const existing = this.store.getRun(runId);
 		if (existing && (existing.status === "planned" || existing.status === "running")) {
 			throw new DagError(
@@ -571,6 +890,7 @@ export class MemoryEngine {
 	}
 
 	finishRun(runId: string, status: "completed" | "failed" | "interrupted", payload: unknown): void {
+		this.assertWriter();
 		this.assertRunTransition(runId, status);
 		const existing = this.store.getRun(runId);
 		this.store.putRun(runId, existing?.operationId ?? "reconcile", status, JSON.stringify(payload));
