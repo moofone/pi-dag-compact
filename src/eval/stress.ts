@@ -33,6 +33,17 @@ export interface StressResult {
 	incrementalRssBytes: number;
 	metadataBytes: number;
 	idleTimersInCore: boolean;
+	/**
+	 * Attempt accounting from the shared request ledger. The stress run uses the
+	 * same harness as the scenario runs, so it is not exempt from R0's rule that
+	 * every provider attempt is counted. Per-cut capture validation of the ten
+	 * handoff boundaries is R8's M04 work, not this gate's.
+	 */
+	providerAttempts: number;
+	usageKnownAttempts: number;
+	usageUnknownAttempts: number;
+	usageComplete: boolean;
+	handoffCutsCaptureValidated: boolean;
 	outDir: string;
 }
 
@@ -244,6 +255,7 @@ export async function runStressScenario(options: { outDir?: string } = {}): Prom
 		fauxFactory: createMaintenanceFactory({ operationPrefix: "stress-cut" }),
 	});
 	let handoffCuts = 0;
+	let ledgerTotals = harness.ledger.totals();
 	try {
 		for (let cut = 1; cut <= CUTS; cut += 1) {
 			await harness.session.prompt(`# Stress fuel ${cut}a\n${"pad ".repeat(2500)}`);
@@ -263,8 +275,14 @@ export async function runStressScenario(options: { outDir?: string } = {}): Prom
 			}
 			handoffCuts += 1;
 		}
+		ledgerTotals = harness.ledger.totals();
 	} finally {
 		await harness.cleanup();
+	}
+	if (!ledgerTotals.usageComplete) {
+		throw new Error(
+			`stress run has unaccounted provider usage: ${ledgerTotals.unknownCalls} of ${ledgerTotals.attempts} attempts reported none`,
+		);
 	}
 
 	const metadataBytes =
@@ -287,6 +305,11 @@ export async function runStressScenario(options: { outDir?: string } = {}): Prom
 		incrementalRssBytes: Math.max(0, peakRssBytes - baselineRssBytes),
 		metadataBytes,
 		idleTimersInCore: false,
+		providerAttempts: ledgerTotals.attempts,
+		usageKnownAttempts: ledgerTotals.knownCalls,
+		usageUnknownAttempts: ledgerTotals.unknownCalls,
+		usageComplete: ledgerTotals.usageComplete,
+		handoffCutsCaptureValidated: false,
 		outDir: workspace.outDir,
 	};
 
