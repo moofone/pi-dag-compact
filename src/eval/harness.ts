@@ -13,10 +13,20 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import piDagCompact from "../index.ts";
+import { HostBoundary } from "../extension/boundary.ts";
+import type { ExtensionRuntime } from "../extension/runtime.ts";
+import type { AdmissionLedger, OwnerId } from "../host/admission.ts";
+import { type DurabilityObserver, readPersistedEntryIds } from "../host/durability.ts";
+import type { UncertaintyFence } from "../host/fence.ts";
+import { createPiDagCompact } from "../index.ts";
 import type { EvalConfig } from "../schema/scenario.ts";
 import { createFauxResponseFactory } from "./faux-agent.ts";
 import { createRequestLedger, type RequestLedger } from "./ledger.ts";
+import {
+	installPersistInjection,
+	type PersistFailurePlan,
+	type PersistInjectionHandle,
+} from "./persist-injection.ts";
 import {
 	createRecordingFauxProvider,
 	type EvalBarriers,
@@ -55,6 +65,26 @@ export interface ClassicHarness {
 	/** Real extension commands that ran, with their notified output. */
 	commandOutputs: CommandInvocation[];
 	latestTurn: { current: number };
+	/**
+	 * Failure injection at `SessionManager._persist`, the host's write boundary.
+	 * Installed always, armed only when a plan is supplied. It intercepts the
+	 * boundary; the leaf advance, the tree, the context builder and compaction
+	 * all stay production code.
+	 */
+	persist: PersistInjectionHandle;
+	/** The real extension runtime, when the DAG extension is loaded. */
+	dagRuntime: ExtensionRuntime | undefined;
+	/**
+	 * The extension-owned host boundary. When the DAG extension is loaded this is
+	 * the extension's own boundary, so a fixture asserts the real fence and the
+	 * real admission ledger, not a copy of them.
+	 */
+	boundary: HostBoundary;
+	durability: DurabilityObserver;
+	fence: UncertaintyFence;
+	admission: AdmissionLedger;
+	/** Entry ids readable out of the session file right now. Never an fsync claim. */
+	persistedEntryIds: () => Set<string>;
 	peakRssBytes: () => number;
 	cleanup: () => Promise<void>;
 }
@@ -69,6 +99,12 @@ export interface HarnessOptions {
 	fauxFactory?: (context: Context) => AssistantMessage;
 	injection?: EvalInjection;
 	barriers?: EvalBarriers;
+	/** Arm the host persistence boundary to fail. */
+	persistFailure?: PersistFailurePlan;
+	/** Resume an existing session file instead of starting a new session. */
+	sessionFile?: string;
+	/** Bind this session's goal-scheduled work to one owner with a finite allowance. */
+	owner?: { owner: OwnerId; allowance: number };
 }
 
 /**
@@ -192,8 +228,9 @@ export async function createClassicHarness(
 		});
 	};
 
+	let dagRuntime: ExtensionRuntime | undefined;
 	const observed: ExtensionFactory[] = [
-		...(dag ? [piDagCompact] : []),
+		...(dag ? [createPiDagCompact({ onRuntime: (runtime) => (dagRuntime = runtime) })] : []),
 		...(options.extensions ?? []),
 	];
 	const extensionFactories: InlineExtension[] = [
@@ -215,7 +252,13 @@ export async function createClassicHarness(
 	});
 	await resourceLoader.reload();
 
-	const sessionManager = SessionManager.create(workspace.cwd, workspace.sessionDir);
+	const sessionManager = options.sessionFile
+		? SessionManager.open(options.sessionFile, workspace.sessionDir, workspace.cwd)
+		: SessionManager.create(workspace.cwd, workspace.sessionDir);
+	const persist = installPersistInjection(
+		sessionManager,
+		...(options.persistFailure ? [options.persistFailure] : []),
+	);
 	const { session } = await createAgentSession({
 		cwd: workspace.cwd,
 		agentDir: workspace.agentDir,
@@ -229,6 +272,16 @@ export async function createClassicHarness(
 		sessionManager,
 		settingsManager,
 	});
+
+	// When the DAG extension is loaded, its own boundary is the one under test.
+	const boundary = dagRuntime?.boundary ?? new HostBoundary();
+	boundary.attach(sessionManager);
+	if (options.owner) {
+		if (!dagRuntime) {
+			throw new Error("binding an owner requires the DAG extension (dag: true)");
+		}
+		dagRuntime.bindOwner(options.owner.owner, options.owner.allowance);
+	}
 
 	let peakRss = process.memoryUsage().rss;
 	const rssTimer = setInterval(() => {
@@ -248,9 +301,21 @@ export async function createClassicHarness(
 		},
 		commandOutputs,
 		latestTurn,
+		persist,
+		dagRuntime,
+		boundary,
+		durability: boundary.durability,
+		get fence() {
+			return boundary.fence;
+		},
+		get admission() {
+			return boundary.admission;
+		},
+		persistedEntryIds: () => readPersistedEntryIds(sessionManager.getSessionFile()),
 		peakRssBytes: () => Math.max(peakRss, process.memoryUsage().rss),
 		cleanup: async () => {
 			clearInterval(rssTimer);
+			persist.restore();
 			session.dispose();
 		},
 	};

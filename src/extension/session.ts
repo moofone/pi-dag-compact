@@ -2,6 +2,11 @@ import type { SessionEntry, SessionManager } from "@earendil-works/pi-coding-age
 
 type BranchReader = { getBranch(): readonly SessionEntry[] };
 
+import {
+	type AppendObservation,
+	classifyAppend,
+	isDurabilityAcknowledged,
+} from "../host/durability.ts";
 import type { PiRefLike } from "../memory/engine.ts";
 import { utf8Bytes } from "../memory/limits.ts";
 import { type ChunkView, fitChunk } from "../memory/retrieval.ts";
@@ -29,13 +34,22 @@ export function collectPiRefsFromEntries(entries: readonly SessionEntry[]): PiRe
 	return refs;
 }
 
+/**
+ * Append a Pi ref and report what the host actually did with it.
+ *
+ * This deliberately does not return a bare entry id. The host hands an id back
+ * before it has written anything, so an id on its own is not an acknowledgement
+ * of anything; the caller needs the observed durability alongside it.
+ */
 export function appendPiRef(
 	sessionManager: SessionManager,
 	ref: PiRefData,
 	checkpoint: boolean,
-): string {
+): AppendObservation {
 	const customType = checkpoint ? "dag_checkpoint_ref" : "dag_revision_ref";
-	return sessionManager.appendCustomEntry(customType, ref);
+	const entryId = sessionManager.appendCustomEntry(customType, ref);
+	const durability = classifyAppend(sessionManager, entryId);
+	return { entryId, durability, acknowledged: isDurabilityAcknowledged(durability) };
 }
 
 export function findCopiedEntry(
