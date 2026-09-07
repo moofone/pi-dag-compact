@@ -71,7 +71,8 @@ export function registerRecordTools(pi: ExtensionAPI, runtime: ExtensionRuntime)
 	pi.registerTool({
 		name: "dag_query",
 		label: "DAG query",
-		description: "Search the active working set or archived history. Coverage is explicit.",
+		description:
+			"Search the active working set or archived history, resolve typed record IDs, or read one oversized record in chunks. Coverage and per-ID status are explicit: an active miss says nothing about unsearched history.",
 		parameters: QueryRequestSchema,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
@@ -79,7 +80,12 @@ export function registerRecordTools(pi: ExtensionAPI, runtime: ExtensionRuntime)
 				const result = queryWorkingSet(engine, params);
 				return {
 					content: [{ type: "text", text: JSON.stringify(result) }],
-					details: { complete: result.complete, truncated: result.truncated },
+					details: {
+						complete: result.complete,
+						truncated: result.truncated,
+						scanComplete: result.coverage.scanComplete,
+						scannedBytes: result.coverage.scannedBytes,
+					},
 				};
 			} catch (error) {
 				return errorResult(error);
@@ -91,13 +97,19 @@ export function registerRecordTools(pi: ExtensionAPI, runtime: ExtensionRuntime)
 		name: "session_read",
 		label: "Session read",
 		description:
-			"Read a session-qualified evidence entry on the current branch, or report unavailable.",
+			"Read a bounded chunk of a session-qualified evidence entry on the current branch, or report unavailable. Continue from chunk.nextByteOffset until chunk.complete.",
 		parameters: Type.Object({
 			sessionId: Type.String({ minLength: 1 }),
 			entryId: Type.String({ minLength: 1 }),
+			byteOffset: Type.Optional(Type.Integer({ minimum: 0 })),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const resolved = resolveSessionEvidence(ctx.sessionManager, params.sessionId, params.entryId);
+			const resolved = resolveSessionEvidence(
+				ctx.sessionManager,
+				params.sessionId,
+				params.entryId,
+				{ byteOffset: params.byteOffset ?? 0 },
+			);
 			if ("unavailable" in resolved) {
 				return {
 					content: [{ type: "text", text: JSON.stringify(resolved) }],
@@ -105,8 +117,12 @@ export function registerRecordTools(pi: ExtensionAPI, runtime: ExtensionRuntime)
 				};
 			}
 			return {
-				content: [{ type: "text", text: JSON.stringify(resolved.entry) }],
-				details: { id: resolved.entry.id },
+				content: [{ type: "text", text: JSON.stringify(resolved) }],
+				details: {
+					id: resolved.entry.id,
+					complete: resolved.chunk.complete,
+					nextByteOffset: resolved.chunk.nextByteOffset,
+				},
 			};
 		},
 	});

@@ -12,6 +12,7 @@ import { canonicalBatch, canonicalSnapshot, edgeKey, newId, sha256 } from "./can
 import { DagError } from "./errors.ts";
 import { cloneEdges, cloneNodes, validateActiveSet } from "./graph.ts";
 import { LIMITS, utf8Bytes } from "./limits.ts";
+import { scanHistory } from "./retrieval.ts";
 import {
 	issueSelectionRevision,
 	isTerminal,
@@ -20,7 +21,13 @@ import {
 	resolveSelection,
 	validateSelectionDraft,
 } from "./selection.ts";
-import { parseGraph, type RevisionRow, SqliteStore } from "./store.ts";
+import {
+	type ArchivedRow,
+	type ArchiveKey,
+	parseGraph,
+	type RevisionRow,
+	SqliteStore,
+} from "./store.ts";
 
 export interface BranchContext {
 	sessionId: string;
@@ -416,8 +423,112 @@ export class MemoryEngine {
 		return this.store.getRun(runId);
 	}
 
-	archivedSearch(query: string, limit: number, cursor?: string): WorkingNode[] {
-		return this.store.searchArchived(query, limit, cursor);
+	/**
+	 * Bounded literal search of archived history.
+	 *
+	 * Matching happens in process over record fields, so `%` and `_` are
+	 * ordinary characters rather than SQL wildcards.
+	 */
+	archivedSearch(query: string, limit: number): WorkingNode[] {
+		return scanHistory(this, {
+			needle: query,
+			highWater: this.archivedHighWater(),
+			after: null,
+			scanBudgetBytes: LIMITS.historyScanBytes,
+			maxMatches: limit,
+		}).matches.map((match) => match.node);
+	}
+
+	// --- bounded durable reads (RetrievalSource) ---------------------------
+
+	snapshotNodes(): WorkingNode[] {
+		return cloneNodes(this.nodes);
+	}
+
+	snapshotRevisionId(): string | null {
+		return this.revisionId;
+	}
+
+	archivedHighWater(): number {
+		return this.store.archivedHighWater();
+	}
+
+	archivedPage(highWater: number, after: ArchiveKey | null, limit: number): ArchivedRow[] {
+		return this.store.archivedPage(highWater, after, limit);
+	}
+
+	archivedVersions(id: string): ArchivedRow[] {
+		return this.store.archivedVersions(id);
+	}
+
+	revisionStatus(revisionId: string): string | undefined {
+		return this.store.getRevision(revisionId)?.status;
+	}
+
+	/** Revision identity and shape, never the whole snapshot payload. */
+	revisionMeta(revisionId: string): Record<string, unknown> | undefined {
+		const row = this.store.getRevision(revisionId);
+		if (!row) return undefined;
+		const graph = parseGraph(row.nodesJson, row.edgesJson);
+		return {
+			revisionId: row.revisionId,
+			revision: row.revision,
+			parentRevisionId: row.parentRevisionId,
+			operationId: row.operationId,
+			payloadHash: row.payloadHash,
+			checkpointId: row.checkpointId,
+			status: row.status,
+			createdAt: row.createdAt,
+			nodeCount: graph.nodes.length,
+			edgeCount: graph.edges.length,
+		};
+	}
+
+	checkpointMeta(checkpointId: string): Record<string, unknown> | undefined {
+		const row = this.store.getCheckpoint(checkpointId);
+		if (!row) return undefined;
+		let schemaVersion: unknown;
+		let workingRevisionId: unknown;
+		let nodeCount = 0;
+		try {
+			const payload = JSON.parse(row.payloadJson) as {
+				schemaVersion?: unknown;
+				workingRevisionId?: unknown;
+				nodes?: unknown[];
+			};
+			schemaVersion = payload.schemaVersion;
+			workingRevisionId = payload.workingRevisionId;
+			nodeCount = Array.isArray(payload.nodes) ? payload.nodes.length : 0;
+		} catch {
+			// A checkpoint whose payload will not parse still has an identity.
+		}
+		return {
+			checkpointId: row.checkpointId,
+			revisionId: row.revisionId,
+			payloadHash: row.payloadHash,
+			createdAt: row.createdAt,
+			schemaVersion,
+			workingRevisionId,
+			nodeCount,
+		};
+	}
+
+	researchRecord(recordId: string): Record<string, unknown> | undefined {
+		const row = this.store.getResearchEvent(recordId);
+		if (!row) return undefined;
+		let payload: unknown;
+		try {
+			payload = JSON.parse(row.payloadJson) as unknown;
+		} catch {
+			payload = null;
+		}
+		return {
+			recordId: row.recordId,
+			operationId: row.operationId,
+			kind: row.kind,
+			payloadHash: row.payloadHash,
+			payload,
+		};
 	}
 
 	private reconstructFromRow(row: RevisionRow | undefined): void {
