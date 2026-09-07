@@ -19,6 +19,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { MemoryEngine } from "../../src/memory/engine.ts";
+import { DagError } from "../../src/memory/errors.ts";
 import type { PiRefData } from "../../src/schema/working.ts";
 import { branchAt, seedBatch } from "../support/d0x-fixtures.ts";
 import { makeTempDir } from "../support/tmp.ts";
@@ -175,6 +176,46 @@ test("D02 a missing pointer is appended when branch and parent both still match"
 			return "entry-3";
 		});
 		assert.deepEqual(again, [], "repeated recovery does not duplicate the logical update");
+		reopened.close();
+	} finally {
+		tmp.cleanup();
+	}
+});
+
+test("D02 a pointer on the branch cannot reconcile onto ancestry it was not prepared against", () => {
+	const tmp = makeTempDir("pi-dag-d02-");
+	try {
+		const engine = MemoryEngine.open(tmp.path, "s1");
+		const first = engine.update(seedBatch("d02-1"), branchAt("s1", "leaf-a"));
+		engine.acknowledgeRef(first.operationId, "entry-1");
+		const second = engine.update(
+			{
+				operationId: "d02-2",
+				upsertNodes: [{ id: "extra", kind: "task", title: "second", body: "", status: "open" }],
+			},
+			branchAt("s1", "leaf-b"),
+		);
+		assert.equal(
+			engine.revisionMeta(second.revisionId)?.parentRevisionId,
+			first.revisionId,
+			"sanity: the pending revision was prepared against the first revision",
+		);
+		engine.close();
+
+		// The branch carries the second revision's pointer, but nothing selects the
+		// first one before it. Reconciling the missing acknowledgement here would
+		// publish a revision onto ancestry it was never prepared against.
+		const reopened = MemoryEngine.open(tmp.path, "s1");
+		assert.throws(
+			() => reopened.reconstruct([checkpointRef(second.piRef)]),
+			(error: unknown) => error instanceof DagError && error.code === "expected_parent_mismatch",
+		);
+		assert.equal(reopened.snapshot().revisionId, null, "nothing is published");
+		assert.equal(
+			reopened.revisionStatus(second.revisionId),
+			"prepared",
+			"the record keeps its state rather than being selected by the wrong branch",
+		);
 		reopened.close();
 	} finally {
 		tmp.cleanup();

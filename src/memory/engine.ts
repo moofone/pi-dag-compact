@@ -449,7 +449,18 @@ export class MemoryEngine {
 		}
 		if (row.status === "prepared") {
 			// The pointer is on the branch and the acknowledgement is missing. The
-			// pointer is the authority, so it reconciles here — once.
+			// pointer is the authority, so it reconciles here — once, and only onto
+			// the ancestry the revision was prepared against.
+			const expectedParent = refs.at(-2)?.revisionId ?? null;
+			if (row.parentRevisionId !== expectedParent) {
+				return this.failLoad({
+					code: "expected_parent_mismatch",
+					detail: `revision ${row.revisionId} was prepared against parent ${
+						row.parentRevisionId ?? "(none)"
+					}, but the branch selects ${expectedParent ?? "(none)"} before it`,
+					revisionId: row.revisionId,
+				});
+			}
 			const entryId = entries.at(-1)?.entryId ?? row.piEntryId ?? `reconciled:${row.revisionId}`;
 			this.store.setRevisionStatus(row.revisionId, "selected", entryId);
 			const reloaded = this.store.getRevision(row.revisionId);
