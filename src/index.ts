@@ -1,7 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { registerAdmissionHooks } from "./extension/admission-hooks.ts";
 import { resolveConfig } from "./extension/config.ts";
 import { registerHandoffHook } from "./extension/handoff.ts";
-import { createRuntime } from "./extension/runtime.ts";
+import { createRuntime, type ExtensionRuntime } from "./extension/runtime.ts";
 import { registerRecordTools } from "./extension/tools.ts";
 import { dagStatus } from "./memory/query.ts";
 import type { WorkingNode } from "./schema/working.ts";
@@ -18,9 +19,31 @@ function titles(nodes: WorkingNode[]): string {
  * explicit-handoff: /dag-handoff may replace one manual compact with a working-set card.
  * Threshold and overflow compaction stay classic.
  */
+export interface PiDagCompactOptions {
+	/**
+	 * Observe the runtime this factory builds, including the host boundary it
+	 * owns. Fixtures use it to assert the extension-level fence and the
+	 * owner-bound admission ledger through the real extension rather than a
+	 * copy of them.
+	 */
+	onRuntime?: (runtime: ExtensionRuntime) => void;
+}
+
+export function createPiDagCompact(options: PiDagCompactOptions = {}): (pi: ExtensionAPI) => void {
+	return (pi) => {
+		build(pi, options);
+	};
+}
+
 export default function piDagCompact(pi: ExtensionAPI): void {
+	build(pi, {});
+}
+
+function build(pi: ExtensionAPI, options: PiDagCompactOptions): void {
 	const runtime = createRuntime(pi);
+	options.onRuntime?.(runtime);
 	registerHandoffHook(pi, runtime, runtime.handoff);
+	registerAdmissionHooks(pi, runtime);
 	registerRecordTools(pi, runtime);
 
 	pi.registerCommand("dag", {
@@ -68,6 +91,10 @@ export default function piDagCompact(pi: ExtensionAPI): void {
 					"/dag-handoff requires mode explicit-handoff. Classic compaction remains.",
 					"warning",
 				);
+				return;
+			}
+			if (runtime.boundary.fence.refuses("handoff_fallback")) {
+				ctx.ui.notify(runtime.boundary.fence.message(), "error");
 				return;
 			}
 			if (runtime.handoff.fenced) {

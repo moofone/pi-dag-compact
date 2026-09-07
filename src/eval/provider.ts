@@ -62,7 +62,15 @@ export interface EvalInjection {
 
 /** Barriers for deterministic synchronization; never sleeps, never timing based. */
 export interface EvalBarriers {
-	beforeAttempt?: (capture: ProviderCapture) => void | Promise<void>;
+	/**
+	 * Synchronous, and called for every attempt the moment its context is
+	 * captured, before the provider answers. Synchronous on purpose: the
+	 * streaming path returns a stream rather than a promise, so a barrier that
+	 * could suspend there would have to reimplement the stream. Everything R1
+	 * needs at this point - observing an attempt, charging it, pausing an owner -
+	 * is synchronous.
+	 */
+	beforeAttempt?: (capture: ProviderCapture) => void;
 	afterAttempt?: (capture: ProviderCapture, message: AssistantMessage) => void | Promise<void>;
 }
 
@@ -232,6 +240,7 @@ export function createRecordingFauxProvider(options: {
 			streamOptions?: never,
 		): AssistantMessageEventStream => {
 			const capture = record(context);
+			options.barriers?.beforeAttempt?.(capture);
 			if (options.injection?.failProviderAttempt === capture.sequence) {
 				const outer = createAssistantMessageEventStream();
 				const message = injectedFailure(model);

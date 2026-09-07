@@ -43,8 +43,12 @@ test("file-backed session restart restores the working set from Pi refs", () => 
 			},
 			{ sessionId: session.getSessionId(), leafId: session.getLeafId() ?? "none" },
 		);
-		const entryId = appendPiRef(session, commit.piRef, Boolean(commit.checkpointId));
-		engine.acknowledgeRef(commit.operationId, entryId);
+		const appended = appendPiRef(session, commit.piRef, Boolean(commit.checkpointId));
+		// An in-memory session never persists, so the returned id acknowledges
+		// nothing at all. It is still the id.
+		assert.equal(appended.durability, "not_persisted");
+		assert.equal(appended.acknowledged, false);
+		engine.acknowledgeRef(commit.operationId, appended.entryId);
 		const refs = collectPiRefs(session);
 		assert.equal(refs.length > 0, true);
 		const sessionId = session.getSessionId();

@@ -34,16 +34,23 @@ export function registerRecordTools(pi: ExtensionAPI, runtime: ExtensionRuntime)
 				if (runtime.handoff.fenced) {
 					throw new DagError("handoff_fenced", runtime.handoff.fenced);
 				}
+				if (runtime.boundary.fence.refuses("extension_append")) {
+					throw new DagError("host_uncertain", runtime.boundary.fence.message());
+				}
 				const engine = runtime.ensureEngine(ctx);
 				const result = engine.update(params, {
 					sessionId: ctx.sessionManager.getSessionId(),
 					leafId: ctx.sessionManager.getLeafId() ?? "none",
 				});
-				pi.appendEntry(
-					result.checkpointId ? "dag_checkpoint_ref" : "dag_revision_ref",
-					result.piRef,
+				// An extension append onto an uncertain session is refused, not
+				// attempted: the host would take it into memory either way.
+				const observation = runtime.boundary.guardedAppend(ctx.sessionManager, () =>
+					pi.appendEntry(
+						result.checkpointId ? "dag_checkpoint_ref" : "dag_revision_ref",
+						result.piRef,
+					),
 				);
-				engine.acknowledgeRef(result.operationId, ctx.sessionManager.getLeafId() ?? "appended");
+				engine.acknowledgeRef(result.operationId, observation.entryId || "appended");
 				return {
 					content: [
 						{

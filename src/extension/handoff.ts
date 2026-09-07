@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { classifyAppend } from "../host/durability.ts";
 import { DagError } from "../memory/errors.ts";
 import {
 	assertHandoffEligible,
@@ -130,12 +131,23 @@ export function registerHandoffHook(
 	handoff: HandoffController,
 ): void {
 	pi.on("input", async (_event, ctx) => {
+		runtime.observeContext(ctx);
+		if (runtime.boundary.fence.refuses("input")) {
+			ctx.ui.notify(runtime.boundary.fence.message(), "error");
+			return { action: "handled" as const };
+		}
 		if (!handoff.fenced) return;
 		ctx.ui.notify(`session fenced: ${handoff.fenced}`, "error");
 		return { action: "handled" as const };
 	});
 
 	pi.on("session_before_compact", async (event, ctx) => {
+		runtime.observeContext(ctx);
+		// Covers manual, threshold and overflow alike: an uncertain session is not
+		// a safe base for a cut, whoever asked for it.
+		if (runtime.boundary.fence.refuses(`compaction:${event.reason}`)) {
+			return { cancel: true };
+		}
 		if (handoff.fenced) {
 			return { cancel: true };
 		}
@@ -158,20 +170,25 @@ export function registerHandoffHook(
 		if (!decision || "cancel" in decision) {
 			return decision;
 		}
+		let markerId: string | undefined;
 		try {
-			pi.appendEntry("dag_handoff_marker", {
-				v: 1,
-				sessionId: current.sessionId,
-				leafId: current.leafId,
-				revisionId: decision.compaction.details.revisionId,
-				checkpointId: decision.compaction.details.checkpointId,
-				coveredThroughEntryId: current.leafId,
-			});
+			// The marker is the entry the whole handoff is anchored to, so it is the
+			// one append whose observed durability is worth the read-back.
+			markerId = runtime.boundary.guardedAppend(ctx.sessionManager, () =>
+				pi.appendEntry("dag_handoff_marker", {
+					v: 1,
+					sessionId: current.sessionId,
+					leafId: current.leafId,
+					revisionId: decision.compaction.details.revisionId,
+					checkpointId: decision.compaction.details.checkpointId,
+					coveredThroughEntryId: current.leafId,
+				}),
+			).entryId;
 		} catch (error) {
 			handoff.block(error instanceof Error ? error.message : String(error));
 			return { cancel: true };
 		}
-		const markerId = ctx.sessionManager.getLeafId() ?? undefined;
+		markerId = markerId ?? ctx.sessionManager.getLeafId() ?? undefined;
 		if (markerId) {
 			decision.compaction.firstKeptEntryId = markerId;
 			decision.compaction.details.markerId = markerId;
@@ -185,7 +202,26 @@ export function registerHandoffHook(
 		}
 	});
 
-	pi.on("session_compact_failed", async (event) => {
+	pi.on("session_compact_failed", async (event, ctx) => {
+		runtime.observeContext(ctx);
+		// A compaction that failed while persisting leaves its summary entry in
+		// memory and as the leaf while the session file has no trace of it. That
+		// is observable without trusting the host: read the file back.
+		const leafId = ctx.sessionManager.getLeafId();
+		const leaf = leafId ? ctx.sessionManager.getEntry(leafId) : undefined;
+		if (
+			leafId &&
+			leaf?.type === "compaction" &&
+			classifyAppend(ctx.sessionManager, leafId) !== "present_in_file"
+		) {
+			runtime.boundary.fence.raise({
+				reason: "compaction_append_failed",
+				detail: `compaction entry ${leafId} is the leaf but is not in the session file`,
+				sessionId: ctx.sessionManager.getSessionId(),
+				leafId,
+				entryId: leafId,
+			});
+		}
 		if (event.fromExtension) {
 			handoff.block("compaction append failed; repair the session before another handoff");
 		} else if (handoff.isArmed) {
