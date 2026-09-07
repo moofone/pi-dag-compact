@@ -14,6 +14,7 @@ export interface RevisionRow {
 	checkpointId: string | null;
 	nodesJson: string;
 	edgesJson: string;
+	selectionJson: string | null;
 	status: RevisionStatus;
 	expectedSessionId: string;
 	expectedBranchLeafId: string;
@@ -25,6 +26,14 @@ export interface OperationRow {
 	operationId: string;
 	payloadHash: string;
 	payload: string;
+}
+
+export interface ResearchEventRow {
+	recordId: string;
+	operationId: string;
+	kind: string;
+	payloadHash: string;
+	payloadJson: string;
 }
 
 const SCHEMA = `
@@ -51,6 +60,7 @@ CREATE TABLE IF NOT EXISTS revisions (
   checkpoint_id TEXT,
   nodes_json TEXT NOT NULL,
   edges_json TEXT NOT NULL,
+  selection_json TEXT,
   status TEXT NOT NULL,
   expected_session_id TEXT NOT NULL,
   expected_branch_leaf_id TEXT NOT NULL,
@@ -73,8 +83,9 @@ CREATE TABLE IF NOT EXISTS archived_nodes (
 );
 CREATE TABLE IF NOT EXISTS research_events (
   record_id TEXT PRIMARY KEY,
-  operation_id TEXT NOT NULL,
+  operation_id TEXT NOT NULL UNIQUE,
   kind TEXT NOT NULL,
+  payload_hash TEXT NOT NULL DEFAULT '',
   payload_json TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
@@ -102,6 +113,26 @@ export class SqliteStore {
 		mkdirSync(dirname(path), { recursive: true });
 		this.db = new DatabaseSync(path);
 		this.db.exec(SCHEMA);
+		this.addMissingColumns();
+	}
+
+	/**
+	 * Additive column repair for stores created before schema v2. Full migration
+	 * with mode/version gating belongs to R8; this only prevents a v1 store from
+	 * failing at first read.
+	 */
+	private addMissingColumns(): void {
+		const wanted: Array<[string, string, string]> = [
+			["revisions", "selection_json", "TEXT"],
+			["research_events", "payload_hash", "TEXT NOT NULL DEFAULT ''"],
+		];
+		for (const [table, column, definition] of wanted) {
+			const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+				name: string;
+			}>;
+			if (columns.some((row) => row.name === column)) continue;
+			this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+		}
 	}
 
 	close(): void {
@@ -211,8 +242,8 @@ export class SqliteStore {
 			.prepare(
 				`INSERT INTO revisions (
           revision_id, revision, parent_revision_id, operation_id, payload_hash, checkpoint_id,
-          nodes_json, edges_json, status, expected_session_id, expected_branch_leaf_id, pi_entry_id, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          nodes_json, edges_json, selection_json, status, expected_session_id, expected_branch_leaf_id, pi_entry_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			)
 			.run(
 				row.revisionId,
@@ -223,6 +254,7 @@ export class SqliteStore {
 				row.checkpointId,
 				row.nodesJson,
 				row.edgesJson,
+				row.selectionJson,
 				row.status,
 				row.expectedSessionId,
 				row.expectedBranchLeafId,
@@ -293,12 +325,58 @@ export class SqliteStore {
 		operationId: string,
 		kind: string,
 		payloadJson: string,
+		payloadHash: string,
 	): void {
 		this.db
 			.prepare(
-				"INSERT INTO research_events (record_id, operation_id, kind, payload_json, created_at) VALUES (?, ?, ?, ?, ?)",
+				"INSERT INTO research_events (record_id, operation_id, kind, payload_hash, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
 			)
-			.run(recordId, operationId, kind, payloadJson, Date.now());
+			.run(recordId, operationId, kind, payloadHash, payloadJson, Date.now());
+	}
+
+	getResearchEventByOperation(operationId: string): ResearchEventRow | undefined {
+		const row = this.db
+			.prepare(
+				"SELECT record_id, operation_id, kind, payload_hash, payload_json FROM research_events WHERE operation_id = ?",
+			)
+			.get(operationId) as
+			| {
+					record_id: string;
+					operation_id: string;
+					kind: string;
+					payload_hash: string;
+					payload_json: string;
+			  }
+			| undefined;
+		if (!row) return undefined;
+		return {
+			recordId: row.record_id,
+			operationId: row.operation_id,
+			kind: row.kind,
+			payloadHash: row.payload_hash,
+			payloadJson: row.payload_json,
+		};
+	}
+
+	listResearchEventsByKind(kind: string): ResearchEventRow[] {
+		const rows = this.db
+			.prepare(
+				"SELECT record_id, operation_id, kind, payload_hash, payload_json FROM research_events WHERE kind = ? ORDER BY created_at",
+			)
+			.all(kind) as Array<{
+			record_id: string;
+			operation_id: string;
+			kind: string;
+			payload_hash: string;
+			payload_json: string;
+		}>;
+		return rows.map((row) => ({
+			recordId: row.record_id,
+			operationId: row.operation_id,
+			kind: row.kind,
+			payloadHash: row.payload_hash,
+			payloadJson: row.payload_json,
+		}));
 	}
 
 	insertAttachment(
@@ -359,6 +437,7 @@ export class SqliteStore {
 			checkpointId: (row.checkpoint_id as string | null) ?? null,
 			nodesJson: String(row.nodes_json),
 			edgesJson: String(row.edges_json),
+			selectionJson: (row.selection_json as string | null) ?? null,
 			status: row.status as RevisionStatus,
 			expectedSessionId: String(row.expected_session_id),
 			expectedBranchLeafId: String(row.expected_branch_leaf_id),

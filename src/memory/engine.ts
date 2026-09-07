@@ -1,11 +1,25 @@
 import { join } from "node:path";
 import { parseWithSchema } from "../schema/validate.ts";
-import type { MutationBatch, PiRefData, WorkingEdge, WorkingNode } from "../schema/working.ts";
+import type {
+	ActiveSelection,
+	MutationBatch,
+	PiRefData,
+	WorkingEdge,
+	WorkingNode,
+} from "../schema/working.ts";
 import { MutationBatchSchema, WorkingNodeDraftSchema } from "../schema/working.ts";
 import { canonicalBatch, canonicalSnapshot, edgeKey, newId, sha256 } from "./canonical.ts";
 import { DagError } from "./errors.ts";
 import { cloneEdges, cloneNodes, validateActiveSet } from "./graph.ts";
 import { LIMITS, utf8Bytes } from "./limits.ts";
+import {
+	issueSelectionRevision,
+	isTerminal,
+	pinnedIds,
+	type ResolvedSelection,
+	resolveSelection,
+	validateSelectionDraft,
+} from "./selection.ts";
 import { parseGraph, type RevisionRow, SqliteStore } from "./store.ts";
 
 export interface BranchContext {
@@ -20,6 +34,12 @@ export interface WorkingSnapshot {
 	checkpointId: string | null;
 	nodes: WorkingNode[];
 	edges: WorkingEdge[];
+	/** The committed explicit selection, or null when none was ever set. */
+	explicitSelection: ActiveSelection | null;
+	/** Explicit selection merged with structural derivation for this revision. */
+	selection: ActiveSelection;
+	/** Selection slots the structure could not decide without an explicit ID. */
+	ambiguousSelections: string[];
 }
 
 export interface CommitResult {
@@ -32,7 +52,24 @@ export interface CommitResult {
 	status: "pending_ref" | "selected" | "unselected";
 	nodes: WorkingNode[];
 	edges: WorkingEdge[];
+	/** IDs the engine issued for drafts that arrived without one. */
+	assignedIds: string[];
+	selection: ActiveSelection;
 	piRef: PiRefData;
+}
+
+export interface ResearchIngestInput {
+	operationId: string;
+	kind: string;
+	payload: unknown;
+	runId?: string;
+	runStatus?: "planned" | "running" | "completed" | "failed" | "interrupted";
+}
+
+export interface ResearchIngestResult {
+	recordId: string;
+	/** True when an identical operation had already been committed. */
+	replayed: boolean;
 }
 
 export interface PiRefLike {
@@ -51,6 +88,7 @@ export class MemoryEngine {
 	private revisionId: string | null = null;
 	private revision = 0;
 	private checkpointId: string | null = null;
+	private explicitSelection: ActiveSelection | null = null;
 
 	private constructor(taskId: string, sessionId: string, store: SqliteStore) {
 		this.taskId = taskId;
@@ -79,6 +117,12 @@ export class MemoryEngine {
 	}
 
 	snapshot(): WorkingSnapshot {
+		const resolved = resolveSelection(
+			this.nodes,
+			this.edges,
+			this.explicitSelection,
+			Math.max(this.revision, 1),
+		);
 		return {
 			taskId: this.taskId,
 			revisionId: this.revisionId,
@@ -86,6 +130,9 @@ export class MemoryEngine {
 			checkpointId: this.checkpointId,
 			nodes: cloneNodes(this.nodes),
 			edges: cloneEdges(this.edges),
+			explicitSelection: this.explicitSelection,
+			selection: resolved.selection,
+			ambiguousSelections: resolved.ambiguous,
 		};
 	}
 
@@ -112,8 +159,16 @@ export class MemoryEngine {
 			return this.commitResultFromRow(existingRev);
 		}
 
-		const next = applyBatch(this.nodes, this.edges, batch, this.revision + 1);
+		const nextRevision = this.revision + 1;
+		const next = applyBatch(this.nodes, this.edges, batch, nextRevision, this.explicitSelection);
 		validateActiveSet(next.nodes, next.edges);
+		const explicitSelection = nextExplicitSelection(
+			batch,
+			this.explicitSelection,
+			next.nodes,
+			nextRevision,
+		);
+		const resolved = resolveSelection(next.nodes, next.edges, explicitSelection, nextRevision);
 		const snapshotJson = canonicalSnapshot(next.nodes, next.edges);
 		const snapshotHash = sha256(snapshotJson);
 		const revisionId = newId("rev");
@@ -123,13 +178,14 @@ export class MemoryEngine {
 
 		const row: RevisionRow = {
 			revisionId,
-			revision: this.revision + 1,
+			revision: nextRevision,
 			parentRevisionId: this.revisionId,
 			operationId: batch.operationId,
 			payloadHash: snapshotHash,
 			checkpointId: null,
 			nodesJson: JSON.stringify(next.nodes),
 			edgesJson: JSON.stringify(next.edges),
+			selectionJson: explicitSelection ? JSON.stringify(explicitSelection) : null,
 			status: "pending_ref",
 			expectedSessionId: branch.sessionId,
 			expectedBranchLeafId: branch.leafId,
@@ -146,7 +202,7 @@ export class MemoryEngine {
 					checkpointId,
 					revisionId,
 					JSON.stringify({
-						schemaVersion: 1,
+						schemaVersion: 2,
 						checkpointId,
 						sessionId: branch.sessionId,
 						branchAnchorId: branch.leafId,
@@ -154,6 +210,9 @@ export class MemoryEngine {
 						workingRevision: row.revision,
 						workingRevisionId: revisionId,
 						researchTaskId: this.taskId,
+						selection: resolved.selection,
+						requiredUserEntryIds: [],
+						requiredEvidence: next.nodes.flatMap((node) => node.evidence),
 						nodes: next.nodes,
 						edges: next.edges,
 					}),
@@ -172,6 +231,7 @@ export class MemoryEngine {
 		this.revisionId = revisionId;
 		this.revision = row.revision;
 		this.checkpointId = checkpointId;
+		this.explicitSelection = explicitSelection;
 
 		return {
 			revisionId,
@@ -183,6 +243,8 @@ export class MemoryEngine {
 			status: "pending_ref",
 			nodes: cloneNodes(next.nodes),
 			edges: cloneEdges(next.edges),
+			assignedIds: next.assignedIds,
+			selection: resolved.selection,
 			piRef: {
 				v: 1,
 				taskId: this.taskId,
@@ -250,10 +312,64 @@ export class MemoryEngine {
 		}
 	}
 
-	recordResearchEvent(operationId: string, kind: string, payload: unknown): string {
+	/**
+	 * One idempotency transaction for research ingestion.
+	 *
+	 * The event write and the run publication commit together, so an
+	 * interruption between them leaves neither behind and the retry produces
+	 * exactly one record. Size is checked before any write, so an oversized
+	 * event is rejected atomically. A reused operation ID with different
+	 * content is a conflict, never a silent second record.
+	 */
+	ingestResearchRecord(input: ResearchIngestInput): ResearchIngestResult {
+		const payloadJson = JSON.stringify(input.payload);
+		if (utf8Bytes(payloadJson) > LIMITS.maxEventBytes) {
+			throw new DagError(
+				"limit",
+				`research event exceeds ${LIMITS.maxEventBytes} bytes; store large results as artifacts`,
+			);
+		}
+		const payloadHash = sha256(`${input.kind}\n${payloadJson}`);
+		const existing = this.store.getResearchEventByOperation(input.operationId);
+		if (existing) {
+			if (existing.payloadHash !== payloadHash) {
+				throw new DagError(
+					"op_conflict",
+					`operation ${input.operationId} was reused with different research content`,
+				);
+			}
+			return { recordId: existing.recordId, replayed: true };
+		}
+
+		const runId = input.runId;
+		if (runId && input.runStatus) {
+			this.assertRunTransition(runId, input.runStatus);
+		}
 		const recordId = newId("evt");
-		this.store.insertResearchEvent(recordId, operationId, kind, JSON.stringify(payload));
-		return recordId;
+		this.store.transaction(() => {
+			this.store.insertResearchEvent(
+				recordId,
+				input.operationId,
+				input.kind,
+				payloadJson,
+				payloadHash,
+			);
+			if (runId && input.runStatus) {
+				this.store.putRun(runId, input.operationId, input.runStatus, payloadJson);
+			}
+		});
+		return { recordId, replayed: false };
+	}
+
+	recordResearchEvent(operationId: string, kind: string, payload: unknown): string {
+		return this.ingestResearchRecord({ operationId, kind, payload }).recordId;
+	}
+
+	listResearchRecords(kind: string): Array<{ recordId: string; payload: unknown }> {
+		return this.store.listResearchEventsByKind(kind).map((row) => ({
+			recordId: row.recordId,
+			payload: JSON.parse(row.payloadJson) as unknown,
+		}));
 	}
 
 	attachFork(originSessionId: string, inheritedRevisionId: string | null): void {
@@ -272,8 +388,26 @@ export class MemoryEngine {
 	}
 
 	finishRun(runId: string, status: "completed" | "failed" | "interrupted", payload: unknown): void {
+		this.assertRunTransition(runId, status);
 		const existing = this.store.getRun(runId);
 		this.store.putRun(runId, existing?.operationId ?? "reconcile", status, JSON.stringify(payload));
+	}
+
+	/**
+	 * A failed or interrupted result is terminal. Reaching `completed` requires
+	 * a new `beginRun`, so a later write can never relabel a lost run as a
+	 * successful one.
+	 */
+	private assertRunTransition(runId: string, status: string): void {
+		if (status !== "completed") return;
+		const existing = this.store.getRun(runId);
+		if (!existing) return;
+		if (existing.status === "failed" || existing.status === "interrupted") {
+			throw new DagError(
+				"run_status_conflict",
+				`run ${runId} is ${existing.status}; relaunch it before recording a completed result`,
+			);
+		}
 	}
 
 	getRun(
@@ -293,6 +427,7 @@ export class MemoryEngine {
 			this.revisionId = null;
 			this.revision = 0;
 			this.checkpointId = null;
+			this.explicitSelection = null;
 			return;
 		}
 		const graph = parseGraph(row.nodesJson, row.edgesJson);
@@ -301,10 +436,15 @@ export class MemoryEngine {
 		this.revisionId = row.revisionId;
 		this.revision = row.revision;
 		this.checkpointId = row.checkpointId;
+		this.explicitSelection = row.selectionJson
+			? (JSON.parse(row.selectionJson) as ActiveSelection)
+			: null;
 	}
 
 	private commitResultFromRow(row: RevisionRow): CommitResult {
 		const graph = parseGraph(row.nodesJson, row.edgesJson);
+		const explicit = row.selectionJson ? (JSON.parse(row.selectionJson) as ActiveSelection) : null;
+		const resolved = resolveSelection(graph.nodes, graph.edges, explicit, row.revision);
 		return {
 			revisionId: row.revisionId,
 			revision: row.revision,
@@ -315,6 +455,8 @@ export class MemoryEngine {
 			status: row.status,
 			nodes: graph.nodes,
 			edges: graph.edges,
+			assignedIds: [],
+			selection: resolved.selection,
 			piRef: {
 				v: 1,
 				taskId: this.taskId,
@@ -327,26 +469,32 @@ export class MemoryEngine {
 	}
 }
 
+/**
+ * Apply a batch to prospective state.
+ *
+ * Order matters: upserts, then mutable status deltas, then edges, then
+ * archival. Archiving last means one batch can resolve a record and retire it
+ * together, while every archival decision is judged against the state the
+ * batch actually produces.
+ */
 export function applyBatch(
 	nodes: WorkingNode[],
 	edges: WorkingEdge[],
 	batch: MutationBatch,
 	revision: number,
-): { nodes: WorkingNode[]; edges: WorkingEdge[] } {
+	explicitSelection: ActiveSelection | null = null,
+): { nodes: WorkingNode[]; edges: WorkingEdge[]; assignedIds: string[] } {
 	const nodeMap = new Map(cloneNodes(nodes).map((node) => [node.id, node]));
 	const edgeMap = new Map(cloneEdges(edges).map((edge) => [edgeKey(edge), edge]));
-
-	for (const id of batch.archiveIds ?? []) {
-		nodeMap.delete(id);
-		for (const key of [...edgeMap.keys()]) {
-			const edge = edgeMap.get(key);
-			if (edge && (edge.from === id || edge.to === id)) edgeMap.delete(key);
-		}
-	}
+	const assignedIds: string[] = [];
 
 	for (const draft of batch.upsertNodes ?? []) {
 		parseWithSchema(WorkingNodeDraftSchema, draft, "upsert node");
-		const id = draft.id ?? newId("n");
+		let id = draft.id;
+		if (!id) {
+			id = newId("n");
+			assignedIds.push(id);
+		}
 		const previous = nodeMap.get(id);
 		nodeMap.set(id, {
 			id,
@@ -378,7 +526,90 @@ export function applyBatch(
 		edgeMap.set(edgeKey(edge), { ...edge });
 	}
 
-	const next = { nodes: [...nodeMap.values()], edges: [...edgeMap.values()] };
+	const archiveIds = batch.archiveIds ?? [];
+	if (archiveIds.length > 0) {
+		assertArchivable(
+			archiveIds,
+			[...nodeMap.values()],
+			[...edgeMap.values()],
+			explicitSelection,
+			revision,
+		);
+		for (const id of archiveIds) {
+			nodeMap.delete(id);
+			for (const key of [...edgeMap.keys()]) {
+				const edge = edgeMap.get(key);
+				if (edge && (edge.from === id || edge.to === id)) edgeMap.delete(key);
+			}
+		}
+	}
+
+	const next = { nodes: [...nodeMap.values()], edges: [...edgeMap.values()], assignedIds };
 	validateActiveSet(next.nodes, next.edges);
 	return next;
+}
+
+/**
+ * Deliberate archival. The engine, not the caller, decides what may leave the
+ * active set: never a pinned selection member, never nonterminal work, and
+ * never a prerequisite that active work still depends on.
+ */
+function assertArchivable(
+	archiveIds: string[],
+	nodes: WorkingNode[],
+	edges: WorkingEdge[],
+	explicitSelection: ActiveSelection | null,
+	revision: number,
+): void {
+	const byId = new Map(nodes.map((node) => [node.id, node]));
+	const resolved: ResolvedSelection = resolveSelection(nodes, edges, explicitSelection, revision);
+	const pins = pinnedIds(resolved, explicitSelection);
+	const leaving = new Set(archiveIds);
+
+	for (const id of archiveIds) {
+		const node = byId.get(id);
+		if (!node) continue;
+		if (pins.has(id)) {
+			throw new DagError(
+				"pinned_node",
+				`${id} is a selected record and cannot be archived; deselect it first`,
+			);
+		}
+		if (!isTerminal(node)) {
+			throw new DagError(
+				"nonterminal_node",
+				`${id} is ${node.status}; resolve it before archiving`,
+			);
+		}
+	}
+
+	for (const edge of edges) {
+		if (edge.kind !== "depends_on") continue;
+		if (!leaving.has(edge.to) || leaving.has(edge.from)) continue;
+		const dependent = byId.get(edge.from);
+		if (!dependent || isTerminal(dependent)) continue;
+		throw new DagError(
+			"unresolved_dependency",
+			`${edge.from} still depends on ${edge.to}; record an explicit resolution instead of dropping the edge`,
+		);
+	}
+}
+
+/**
+ * Carry the committed selection forward, or replace it wholesale when the
+ * batch sets one. Selections are validated against the prospective state, so a
+ * selection naming a record that will not exist never reaches disk.
+ */
+function nextExplicitSelection(
+	batch: MutationBatch,
+	previous: ActiveSelection | null,
+	nodes: WorkingNode[],
+	revision: number,
+): ActiveSelection | null {
+	if (!batch.setSelection) return previous;
+	validateSelectionDraft(batch.setSelection, nodes);
+	return {
+		...batch.setSelection,
+		selectionRevision: issueSelectionRevision(batch.setSelection, revision),
+	};
 }

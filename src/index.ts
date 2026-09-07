@@ -4,6 +4,11 @@ import { registerHandoffHook } from "./extension/handoff.ts";
 import { createRuntime } from "./extension/runtime.ts";
 import { registerRecordTools } from "./extension/tools.ts";
 import { dagStatus } from "./memory/query.ts";
+import type { WorkingNode } from "./schema/working.ts";
+
+function titles(nodes: WorkingNode[]): string {
+	return nodes.map((node) => node.title).join("; ") || "(none)";
+}
 
 /**
  * Pi extension factory.
@@ -31,13 +36,20 @@ export default function piDagCompact(pi: ExtensionAPI): void {
 				const status = dagStatus(engine);
 				ctx.ui.notify(
 					[
-						`rev ${status.revisionId ?? "(none)"}`,
-						`objective: ${status.objective.map((node) => node.title).join("; ") || "(none)"}`,
-						`baseline: ${status.acceptedBaseline.map((node) => node.title).join("; ") || "(none)"}`,
-						`work: ${status.currentWork.map((node) => node.title).join("; ") || "(none)"}`,
-						`blockers: ${status.blockers.map((node) => node.title).join("; ") || "(none)"}`,
-						`next: ${status.nextAction.map((node) => node.title).join("; ") || "(none)"}`,
-						`rejected: ${status.rejected.map((node) => node.title).join("; ") || "(none)"}`,
+						`rev ${status.revisionId ?? "(none)"} · selection ${status.selection.selectionRevision}`,
+						`objective: ${titles(status.objective)}`,
+						`constraints: ${titles(status.constraints)}`,
+						`accepted baseline: ${titles(status.acceptedBaseline)}`,
+						`best observed: ${titles(status.bestObserved)}`,
+						`best validated: ${titles(status.bestValidated)}`,
+						`work: ${titles(status.currentWork)}`,
+						`blockers: ${titles(status.blockers)}`,
+						`unresolved: ${titles(status.unresolved)}`,
+						`next: ${titles(status.nextAction)}`,
+						`rejected: ${titles(status.rejected)}`,
+						...(status.ambiguousSelections.length > 0
+							? [`ambiguous selection: ${status.ambiguousSelections.join(", ")}`]
+							: []),
 					].join("\n"),
 					"info",
 				);

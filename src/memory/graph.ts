@@ -56,6 +56,40 @@ export function validateDependsOn(nodes: WorkingNode[], edges: WorkingEdge[]): v
 	}
 }
 
+/**
+ * `A --depends_on--> B` means B is a prerequisite of A. Only status `done`
+ * satisfies a prerequisite; `open`, `blocked`, `stale`, and `rejected` do not.
+ */
+export function prerequisiteIds(id: string, edges: WorkingEdge[]): string[] {
+	return edges
+		.filter((edge) => edge.kind === "depends_on" && edge.from === id)
+		.map((edge) => edge.to);
+}
+
+export function unsatisfiedPrerequisites(
+	id: string,
+	nodes: WorkingNode[],
+	edges: WorkingEdge[],
+): string[] {
+	const byId = new Map(nodes.map((node) => [node.id, node]));
+	return prerequisiteIds(id, edges).filter((target) => byId.get(target)?.status !== "done");
+}
+
+/**
+ * Open tasks whose whole `depends_on` closure of direct prerequisites is done.
+ * Bounded whole-graph check over the active set; no incremental maintenance.
+ */
+export function eligibleTaskIds(nodes: WorkingNode[], edges: WorkingEdge[]): string[] {
+	return nodes
+		.filter(
+			(node) =>
+				node.kind === "task" &&
+				node.status === "open" &&
+				unsatisfiedPrerequisites(node.id, nodes, edges).length === 0,
+		)
+		.map((node) => node.id);
+}
+
 export function prerequisiteOrder(nodes: WorkingNode[], edges: WorkingEdge[]): string[] {
 	const graph = new DirectedGraph({ allowSelfLoops: false });
 	for (const node of nodes) graph.addNode(node.id);
