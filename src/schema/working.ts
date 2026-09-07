@@ -121,11 +121,18 @@ export const MutationBatchSchema = Type.Object({
 	setSelection: Type.Optional(SelectionDraftSchema),
 });
 
+/**
+ * `ids` is a bounded batched read; `cursor` continues a page and is bound to
+ * the scope, query and revision that issued it; `chunkOf` reads one record too
+ * large for a single response, `chunkOffset` bytes in.
+ */
 export const QueryRequestSchema = Type.Object({
 	scope: Type.Union([Type.Literal("active"), Type.Literal("history")]),
 	q: Type.Optional(Type.String()),
 	ids: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 8 })),
 	cursor: Type.Optional(Type.String()),
+	chunkOf: Type.Optional(Type.String({ minLength: 1 })),
+	chunkOffset: Type.Optional(Type.Integer({ minimum: 0 })),
 });
 
 export const PiRefDataSchema = Type.Object({

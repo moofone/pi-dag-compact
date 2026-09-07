@@ -36,6 +36,25 @@ export interface ResearchEventRow {
 	payloadJson: string;
 }
 
+export interface CheckpointRow {
+	checkpointId: string;
+	revisionId: string;
+	payloadJson: string;
+	payloadHash: string;
+	createdAt: number;
+}
+
+/** One archived node version, addressed by the composite `(id, revisionId)`. */
+export interface ArchivedRow {
+	/** Monotonic archive position, used as the scan high-water mark. */
+	seq: number;
+	id: string;
+	revisionId: string;
+	payloadJson: string;
+}
+
+export type ArchiveKey = [string, string];
+
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
@@ -304,20 +323,96 @@ export class SqliteStore {
 			.run(id, revisionId, payloadJson, Date.now());
 	}
 
-	searchArchived(query: string, limit: number, afterId?: string): WorkingNode[] {
+	/**
+	 * Highest archive row identity currently stored.
+	 *
+	 * A bounded scan freezes this value and answers only about rows at or below
+	 * it, so history appended while the caller pages cannot appear halfway
+	 * through a paged answer or make coverage claims dishonest.
+	 */
+	archivedHighWater(): number {
+		const row = this.db.prepare("SELECT MAX(rowid) AS hw FROM archived_nodes").get() as
+			| { hw: number | null }
+			| undefined;
+		return Number(row?.hw ?? 0);
+	}
+
+	/**
+	 * One keyset page of archived rows ordered by the composite `(id,
+	 * revision_id)`. Ordering by ID alone would let a page boundary step over a
+	 * second archived version of the same record.
+	 */
+	archivedPage(highWater: number, after: ArchiveKey | null, limit: number): ArchivedRow[] {
+		const rows = after
+			? (this.db
+					.prepare(
+						`SELECT rowid AS seq, id, revision_id, payload_json FROM archived_nodes
+             WHERE rowid <= ? AND (id > ? OR (id = ? AND revision_id > ?))
+             ORDER BY id, revision_id
+             LIMIT ?`,
+					)
+					.all(highWater, after[0], after[0], after[1], limit) as Array<Record<string, unknown>>)
+			: (this.db
+					.prepare(
+						`SELECT rowid AS seq, id, revision_id, payload_json FROM archived_nodes
+             WHERE rowid <= ?
+             ORDER BY id, revision_id
+             LIMIT ?`,
+					)
+					.all(highWater, limit) as Array<Record<string, unknown>>);
+		return rows.map((row) => ({
+			seq: Number(row.seq),
+			id: String(row.id),
+			revisionId: String(row.revision_id),
+			payloadJson: String(row.payload_json),
+		}));
+	}
+
+	/** Every archived version of one record ID, oldest first. */
+	archivedVersions(id: string): ArchivedRow[] {
 		const rows = this.db
 			.prepare(
-				`SELECT id, payload_json FROM archived_nodes
-         WHERE payload_json LIKE ?
-         AND (? IS NULL OR id > ?)
-         ORDER BY id
-         LIMIT ?`,
+				"SELECT rowid AS seq, id, revision_id, payload_json FROM archived_nodes WHERE id = ? ORDER BY rowid",
 			)
-			.all(`%${query}%`, afterId ?? null, afterId ?? null, limit) as Array<{
-			id: string;
-			payload_json: string;
-		}>;
-		return rows.map((row) => JSON.parse(row.payload_json) as WorkingNode);
+			.all(id) as Array<Record<string, unknown>>;
+		return rows.map((row) => ({
+			seq: Number(row.seq),
+			id: String(row.id),
+			revisionId: String(row.revision_id),
+			payloadJson: String(row.payload_json),
+		}));
+	}
+
+	getCheckpoint(checkpointId: string): CheckpointRow | undefined {
+		const row = this.db
+			.prepare(
+				"SELECT checkpoint_id, revision_id, payload_json, payload_hash, created_at FROM checkpoints WHERE checkpoint_id = ?",
+			)
+			.get(checkpointId) as Record<string, unknown> | undefined;
+		if (!row) return undefined;
+		return {
+			checkpointId: String(row.checkpoint_id),
+			revisionId: String(row.revision_id),
+			payloadJson: String(row.payload_json),
+			payloadHash: String(row.payload_hash),
+			createdAt: Number(row.created_at),
+		};
+	}
+
+	getResearchEvent(recordId: string): ResearchEventRow | undefined {
+		const row = this.db
+			.prepare(
+				"SELECT record_id, operation_id, kind, payload_hash, payload_json FROM research_events WHERE record_id = ?",
+			)
+			.get(recordId) as Record<string, unknown> | undefined;
+		if (!row) return undefined;
+		return {
+			recordId: String(row.record_id),
+			operationId: String(row.operation_id),
+			kind: String(row.kind),
+			payloadHash: String(row.payload_hash),
+			payloadJson: String(row.payload_json),
+		};
 	}
 
 	insertResearchEvent(

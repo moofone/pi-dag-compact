@@ -44,6 +44,37 @@ state, then commit.
 Initial active-set limits to test (not measured results): 200 nodes, 400
 edges, 128 KiB serialized, whichever comes first.
 
+## Retrieval
+
+Reads are bounded and say so. `dag_query` searches the active set or archived
+history, resolves typed record IDs, or reads one oversized record in chunks;
+`session_read` returns a bounded chunk of a transcript entry. Every response
+carries a `coverage` block naming the scope it searched, the bytes it scanned
+and whether that scan finished, so an incomplete search is never reported as a
+definitive no-match. An active miss says nothing about unsearched history.
+
+| Contract | Value |
+|---|---|
+| Query output | 20 records and 8 KiB per response, measured on the serialized response |
+| Batched ID read | 8 IDs, within the same output budget |
+| History scan | At most 4 MiB of archived payload per request |
+
+Search is literal: matching happens in process over record fields, so `%` and
+`_` are ordinary characters rather than SQL wildcards.
+
+A cursor is bound to its scope, its query and either the active revision or a
+frozen archive high-water mark. Presenting it after a mutation, or under a
+different query, is rejected by name rather than reinterpreted. History resumes
+by the composite `(id, revision)` key, so a page boundary cannot step over a
+second archived version of the same record, and records appended while the
+caller is paging fall outside that scan's declared scope.
+
+A bounded ID read reports each ID separately as `found`, `missing`,
+`unavailable_source` or `partial`; IDs that did not fit are named rather than
+dropped. A record too large for any response is delivered as UTF-8-safe chunks
+with a forward-progressing byte offset, so pagination never stalls and nothing
+is silently truncated.
+
 ## Handoff (M2)
 
 `/compact`, threshold compaction, and overflow recovery stay classic during
