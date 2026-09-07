@@ -1,0 +1,24 @@
+{
+	"schemaVersion": 1,
+	"runId": "run-schedule-W1",
+	"candidateId": "schedule",
+	"workloadId": "W1",
+	"question": "Conservative occupancy-preserving schedule for W1.",
+	"source": {
+		"commit": "deadbeef0001",
+		"patchPath": "candidates/schedule.patch",
+		"sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	},
+	"command": ["replay-artifact", "--run", "run-schedule-W1"],
+	"environment": {
+		"gpu": "replay-gpu",
+		"driver": "replay-driver",
+		"host": "artifact-host",
+		"clocksLocked": true
+	},
+	"inputs": {
+		"workloadPath": "workloads/w1.json",
+		"dimensions": "M=4096,N=4096,K=4096",
+		"seed": 7
+	}
+}

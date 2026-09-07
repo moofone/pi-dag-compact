@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { AssistantMessage, Context } from "@earendil-works/pi-ai";
 import { type FauxProviderHandle, fauxProvider } from "@earendil-works/pi-ai";
 import {
 	type AgentSession,
@@ -41,7 +42,11 @@ function serializePayload(payload: unknown): string {
 export async function createClassicHarness(
 	workspace: IsolatedWorkspace,
 	config: EvalConfig,
-	options: { extraExtensions?: InlineExtension[]; dag?: boolean } = {},
+	options: {
+		extraExtensions?: InlineExtension[];
+		dag?: boolean;
+		fauxFactory?: (context: Context) => AssistantMessage;
+	} = {},
 ): Promise<ClassicHarness> {
 	writeFileSync(join(workspace.agentDir, "auth.json"), "{}\n");
 	const dag = options.dag === true;
@@ -72,8 +77,8 @@ export async function createClassicHarness(
 		],
 	});
 	const latestTurn = { current: 1 };
-	const factory = createFauxResponseFactory(latestTurn, { dag });
-	faux.setResponses(Array.from({ length: 256 }, () => factory));
+	const factory = options.fauxFactory ?? createFauxResponseFactory(latestTurn, { dag });
+	faux.setResponses(Array.from({ length: 512 }, () => factory));
 
 	const model = faux.getModel();
 	const modelRuntime = await ModelRuntime.create({

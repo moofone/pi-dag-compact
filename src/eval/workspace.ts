@@ -12,7 +12,10 @@ export interface IsolatedWorkspace {
 	cleanup: () => void;
 }
 
-export function createIsolatedWorkspace(outDir?: string): IsolatedWorkspace {
+export function createIsolatedWorkspace(
+	outDir?: string,
+	snapshot: string = workspaceSnapshot(),
+): IsolatedWorkspace {
 	const root = mkdtempSync(join(tmpdir(), "pi-dag-compact-run-"));
 	const cwd = join(root, "workspace");
 	const agentDir = join(root, "agent");
@@ -22,7 +25,7 @@ export function createIsolatedWorkspace(outDir?: string): IsolatedWorkspace {
 	mkdirSync(agentDir, { recursive: true });
 	mkdirSync(sessionDir, { recursive: true });
 	mkdirSync(resolvedOut, { recursive: true });
-	cpSync(workspaceSnapshot(), cwd, { recursive: true });
+	cpSync(snapshot, cwd, { recursive: true });
 	return {
 		root,
 		cwd,

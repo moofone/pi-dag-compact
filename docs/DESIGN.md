@@ -59,7 +59,7 @@ fences further handoffs and agent input until repair.
 | **M0** | Reproducible classic baseline |
 | **M1** | Recover baseline, constraints, rejections, and next action from durable records |
 | **M2** | First A/B evidence of value, or a documented failure to improve |
-| **M3** | Bounded real pilot and longer stress; CUDA speedup is a separate measurement |
+| **M3** | 300-turn deterministic stress + artifact-replay CUDA question; live CUDA speedup and cross-model claims are separate |
 
 Stop handoff rollout if bookkeeping exceeds savings, constraints disappear, or
 the ledger duplicates existing records without helping decisions.

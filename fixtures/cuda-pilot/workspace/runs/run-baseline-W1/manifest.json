@@ -1,0 +1,24 @@
+{
+	"schemaVersion": 1,
+	"runId": "run-baseline-W1",
+	"candidateId": "baseline",
+	"workloadId": "W1",
+	"question": "Establish complete-pipeline p50 for W1 from replayed NCU artifacts.",
+	"source": {
+		"commit": "deadbeef0001",
+		"patchPath": "src/baseline.cu",
+		"sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	},
+	"command": ["replay-artifact", "--run", "run-baseline-W1"],
+	"environment": {
+		"gpu": "replay-gpu",
+		"driver": "replay-driver",
+		"host": "artifact-host",
+		"clocksLocked": true
+	},
+	"inputs": {
+		"workloadPath": "workloads/w1.json",
+		"dimensions": "M=4096,N=4096,K=4096",
+		"seed": 7
+	}
+}

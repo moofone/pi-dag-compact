@@ -67,9 +67,9 @@ Initial gates:
 
 ## Local rules
 
-Tests and `npm run eval:classic` must not call paid providers or execute GPU
-workloads. Live-model baselines are a later, explicit command and are out of
-CI.
+Tests and `npm run eval:classic` / `eval:ab` / `eval:stress` / `eval:cuda-pilot`
+must not call paid providers or execute GPU workloads. `eval:live` is a refuse
+gate. Live-model baselines and real CUDA speedup are out of CI.
 
 ## Report fields
 

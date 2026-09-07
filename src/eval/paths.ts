@@ -12,3 +12,11 @@ export function scenarioRoot(): string {
 export function workspaceSnapshot(): string {
 	return join(scenarioRoot(), "workspace");
 }
+
+export function cudaPilotRoot(): string {
+	return join(repoRoot(), "fixtures", "cuda-pilot");
+}
+
+export function cudaPilotWorkspace(): string {
+	return join(cudaPilotRoot(), "workspace");
+}

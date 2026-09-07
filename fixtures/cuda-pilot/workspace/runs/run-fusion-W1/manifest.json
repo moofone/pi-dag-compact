@@ -1,0 +1,24 @@
+{
+	"schemaVersion": 1,
+	"runId": "run-fusion-W1",
+	"candidateId": "fusion",
+	"workloadId": "W1",
+	"question": "H17: fusion should reduce launch overhead for W1.",
+	"source": {
+		"commit": "deadbeef0001",
+		"patchPath": "candidates/fusion.patch",
+		"sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	},
+	"command": ["replay-artifact", "--run", "run-fusion-W1"],
+	"environment": {
+		"gpu": "replay-gpu",
+		"driver": "replay-driver",
+		"host": "artifact-host",
+		"clocksLocked": true
+	},
+	"inputs": {
+		"workloadPath": "workloads/w1.json",
+		"dimensions": "M=4096,N=4096,K=4096",
+		"seed": 7
+	}
+}

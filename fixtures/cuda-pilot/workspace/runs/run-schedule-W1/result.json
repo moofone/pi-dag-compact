@@ -1,0 +1,18 @@
+{
+	"schemaVersion": 1,
+	"runId": "run-schedule-W1",
+	"status": "completed",
+	"measurements": {
+		"pipelineP50Ms": 11.1,
+		"kernelP50Ms": 2.8,
+		"smemPct": 50,
+		"unit": "ms",
+		"warmupIters": 10,
+		"sampleIters": 50
+	},
+	"correctness": {
+		"check": "ulp2_or_bitwise",
+		"outcome": "pass",
+		"evidence": "runs/run-schedule-W1/correctness.txt"
+	}
+}

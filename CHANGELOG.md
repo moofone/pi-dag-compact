@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-09-06
+
+### Added
+
+- Deterministic 300-turn stress: unique hypotheses, archival, ten real
+  `/dag-handoff` cuts, restart reconstruct, fork divergence, interrupted-run
+  fencing. Measures query/update p95, RSS, and metadata; does not claim the
+  design targets as properties.
+- CUDA artifact-replay pilot: reads fixture NCU/manifest/result files, rejects
+  fusion for pipeline regression, accepts the schedule candidate. No GPU.
+- `eval:live` gate: refuses paid providers even when `PI_DAG_COMPACT_LIVE=1`.
+  Cross-model and hundreds-of-turn memory claims remain out of scope.
+
 ## [0.3.0] - 2026-09-06
 
 ### Added

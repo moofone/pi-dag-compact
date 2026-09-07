@@ -1,0 +1,8 @@
+{
+	"source": "replayed-artifact",
+	"disclaimer": "Not captured on this machine. Not a live NCU run.",
+	"instructions_issued": 820000,
+	"instructions_executed": 800000,
+	"replay_ratio": 0.024,
+	"shared_bank_conflict_ratio": 0.04
+}
