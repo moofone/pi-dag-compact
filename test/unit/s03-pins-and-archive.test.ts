@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { MemoryEngine } from "../../src/memory/engine.ts";
 import { DagError } from "../../src/memory/errors.ts";
+import { commit } from "../support/commit.ts";
 import { makeTempDir } from "../support/tmp.ts";
 
 const BRANCH = { sessionId: "s", leafId: "leaf-1" };
@@ -24,7 +25,8 @@ function emptySelection() {
 
 function seedPinned(dir: string): MemoryEngine {
 	const engine = MemoryEngine.open(dir, "s");
-	engine.update(
+	commit(
+		engine,
 		{
 			operationId: "seed",
 			upsertNodes: [
@@ -76,7 +78,7 @@ test("S03 archiving any pinned selection member is refused", () => {
 			const engine = seedPinned(tmp.path);
 			const before = engine.snapshot().revisionId;
 			assert.throws(
-				() => engine.update({ operationId: `arch-${pinned}`, archiveIds: [pinned] }, BRANCH),
+				() => commit(engine, { operationId: `arch-${pinned}`, archiveIds: [pinned] }, BRANCH),
 				(error: unknown) =>
 					error instanceof DagError &&
 					(error.code === "pinned_node" || error.code === "nonterminal_node"),
@@ -98,7 +100,8 @@ test("S03 archiving nonterminal work is refused even when it is not selected", (
 	const tmp = makeTempDir("pi-dag-s03-");
 	try {
 		const engine = seedPinned(tmp.path);
-		engine.update(
+		commit(
+			engine,
 			{
 				operationId: "add-loose",
 				upsertNodes: [
@@ -110,12 +113,13 @@ test("S03 archiving nonterminal work is refused even when it is not selected", (
 		);
 		for (const id of ["loose", "wedged"]) {
 			assert.throws(
-				() => engine.update({ operationId: `arch-${id}`, archiveIds: [id] }, BRANCH),
+				() => commit(engine, { operationId: `arch-${id}`, archiveIds: [id] }, BRANCH),
 				(error: unknown) => error instanceof DagError && error.code === "nonterminal_node",
 				`archiving nonterminal ${id} must be refused`,
 			);
 		}
-		engine.update(
+		commit(
+			engine,
 			{
 				operationId: "resolve-then-archive",
 				setStatus: [
@@ -140,7 +144,8 @@ test("S03 archiving a prerequisite still required by open work is refused, not s
 	const tmp = makeTempDir("pi-dag-s03-");
 	try {
 		const engine = seedPinned(tmp.path);
-		engine.update(
+		commit(
+			engine,
 			{
 				operationId: "dep",
 				upsertNodes: [
@@ -151,7 +156,7 @@ test("S03 archiving a prerequisite still required by open work is refused, not s
 			BRANCH,
 		);
 		assert.throws(
-			() => engine.update({ operationId: "arch-prereq", archiveIds: ["prereq"] }, BRANCH),
+			() => commit(engine, { operationId: "arch-prereq", archiveIds: ["prereq"] }, BRANCH),
 			(error: unknown) => error instanceof DagError && error.code === "unresolved_dependency",
 		);
 		assert.equal(
@@ -159,7 +164,8 @@ test("S03 archiving a prerequisite still required by open work is refused, not s
 			true,
 		);
 
-		engine.update(
+		commit(
+			engine,
 			{
 				operationId: "arch-prereq-resolved",
 				removeEdges: [{ from: "experiment", to: "prereq", kind: "depends_on" }],
@@ -185,7 +191,8 @@ test("S03 more than 200 historical nodes archive while selected rejections and e
 		let archived = 0;
 		for (let wave = 0; wave < 12; wave += 1) {
 			const ids = Array.from({ length: 20 }, (_, index) => `h-${wave}-${index}`);
-			engine.update(
+			commit(
+				engine,
 				{
 					operationId: `wave-${wave}`,
 					upsertNodes: ids.map((id) => ({
@@ -199,7 +206,7 @@ test("S03 more than 200 historical nodes archive while selected rejections and e
 				},
 				BRANCH,
 			);
-			engine.update({ operationId: `wave-arch-${wave}`, archiveIds: ids }, BRANCH);
+			commit(engine, { operationId: `wave-arch-${wave}`, archiveIds: ids }, BRANCH);
 			archived += ids.length;
 		}
 		assert.equal(archived > 200, true);
@@ -211,7 +218,7 @@ test("S03 more than 200 historical nodes archive while selected rejections and e
 		assert.equal(sample?.evidence[0]?.kind, "artifact");
 
 		assert.throws(
-			() => engine.update({ operationId: "arch-selected-rej", archiveIds: ["rej"] }, BRANCH),
+			() => commit(engine, { operationId: "arch-selected-rej", archiveIds: ["rej"] }, BRANCH),
 			(error: unknown) => error instanceof DagError && error.code === "pinned_node",
 		);
 		assert.equal(

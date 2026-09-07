@@ -15,6 +15,7 @@ import { LIMITS, utf8Bytes } from "../../src/memory/limits.ts";
 import { queryWorkingSet } from "../../src/memory/query.ts";
 import { SqliteStore } from "../../src/memory/store.ts";
 import type { WorkingNode } from "../../src/schema/working.ts";
+import { commit } from "../support/commit.ts";
 import { asQueryResult, type QueryResultShape } from "../support/retrieval-shape.ts";
 import { makeTempDir } from "../support/tmp.ts";
 
@@ -61,7 +62,8 @@ test("Q03 literal % and _ are search characters, not wildcards", () => {
 	const tmp = makeTempDir("pi-dag-q03-");
 	try {
 		const engine = MemoryEngine.open(tmp.path, "s");
-		engine.update(
+		commit(
+			engine,
 			{
 				operationId: "q03-lit-1",
 				upsertNodes: [
@@ -78,7 +80,8 @@ test("Q03 literal % and _ are search characters, not wildcards", () => {
 			},
 			BRANCH,
 		);
-		engine.update(
+		commit(
+			engine,
 			{
 				operationId: "q03-lit-2",
 				setStatus: [

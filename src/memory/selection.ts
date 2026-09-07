@@ -63,6 +63,17 @@ export function canonicalSelection(draft: SelectionDraft): string {
 	});
 }
 
+/**
+ * The hash of a committed selection, or of its deliberate absence.
+ *
+ * Stored beside the snapshot hash so a load can check the selection it read
+ * rather than trusting the column it was read from.
+ */
+export function selectionStateHash(selection: ActiveSelection | null): string {
+	if (!selection) return sha256("selection:none");
+	return sha256(`selection:${selection.selectionRevision}\n${canonicalSelection(selection)}`);
+}
+
 export function issueSelectionRevision(draft: SelectionDraft, revision: number): string {
 	return `sel_${sha256(`${revision}\n${canonicalSelection(draft)}`).slice(0, 32)}`;
 }

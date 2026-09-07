@@ -4,6 +4,7 @@ import { MemoryEngine } from "../../src/memory/engine.ts";
 import { DagError } from "../../src/memory/errors.ts";
 import { assertHandoffEligible, formatHandoffCard } from "../../src/memory/handoff.ts";
 import { dagStatus } from "../../src/memory/query.ts";
+import { commit } from "../support/commit.ts";
 import { makeTempDir } from "../support/tmp.ts";
 
 const BRANCH = { sessionId: "s", leafId: "leaf-1" };
@@ -28,7 +29,8 @@ test("S01 an explicit selection picks exactly one baseline among many done decis
 	const tmp = makeTempDir("pi-dag-s01-");
 	try {
 		const engine = MemoryEngine.open(tmp.path, "s");
-		engine.update(
+		commit(
+			engine,
 			{
 				operationId: "s01-a",
 				upsertNodes: [
@@ -76,7 +78,8 @@ test("S01 selection names never determine scientific validity", () => {
 	const tmp = makeTempDir("pi-dag-s01-");
 	try {
 		const engine = MemoryEngine.open(tmp.path, "s");
-		engine.update(
+		commit(
+			engine,
 			{
 				operationId: "s01-b",
 				upsertNodes: [
@@ -122,7 +125,8 @@ test("S01 stale constraints stay out of the current context", () => {
 	const tmp = makeTempDir("pi-dag-s01-");
 	try {
 		const engine = MemoryEngine.open(tmp.path, "s");
-		engine.update(
+		commit(
+			engine,
 			{
 				operationId: "s01-c",
 				upsertNodes: [
@@ -150,7 +154,8 @@ test("S01 unresolved hypotheses stay distinct from blockers", () => {
 	const tmp = makeTempDir("pi-dag-s01-");
 	try {
 		const engine = MemoryEngine.open(tmp.path, "s");
-		engine.update(
+		commit(
+			engine,
 			{
 				operationId: "s01-d",
 				upsertNodes: [
@@ -190,7 +195,8 @@ test("S01 an ambiguous baseline with no explicit selection refuses handoff", () 
 	const tmp = makeTempDir("pi-dag-s01-");
 	try {
 		const engine = MemoryEngine.open(tmp.path, "s");
-		engine.update(
+		commit(
+			engine,
 			{
 				operationId: "s01-e",
 				upsertNodes: [
@@ -206,7 +212,8 @@ test("S01 an ambiguous baseline with no explicit selection refuses handoff", () 
 			() => assertHandoffEligible(engine),
 			(error: unknown) => error instanceof DagError && error.code === "handoff_refused",
 		);
-		engine.update(
+		commit(
+			engine,
 			{
 				operationId: "s01-e2",
 				setSelection: {
@@ -229,7 +236,8 @@ test("S01 a selection naming an unknown record is refused before commit", () => 
 	const tmp = makeTempDir("pi-dag-s01-");
 	try {
 		const engine = MemoryEngine.open(tmp.path, "s");
-		const first = engine.update(
+		const first = commit(
+			engine,
 			{
 				operationId: "s01-f",
 				upsertNodes: [
@@ -240,7 +248,8 @@ test("S01 a selection naming an unknown record is refused before commit", () => 
 		);
 		assert.throws(
 			() =>
-				engine.update(
+				commit(
+					engine,
 					{
 						operationId: "s01-f2",
 						setSelection: {

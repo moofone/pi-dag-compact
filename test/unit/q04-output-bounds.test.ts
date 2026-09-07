@@ -14,6 +14,7 @@ import { resolveSessionEvidence } from "../../src/extension/session.ts";
 import { MemoryEngine } from "../../src/memory/engine.ts";
 import { LIMITS, utf8Bytes } from "../../src/memory/limits.ts";
 import { queryWorkingSet } from "../../src/memory/query.ts";
+import { commit } from "../support/commit.ts";
 import {
 	asQueryResult,
 	asSessionEvidence,
@@ -67,7 +68,7 @@ test("Q04 the whole response, envelope and separators included, fits the byte bu
 			expected.push(id);
 			upsertNodes.push(sizedNode(id, `envelope record ${index}`, 1024));
 		}
-		engine.update({ operationId: "q04-env", upsertNodes }, BRANCH);
+		commit(engine, { operationId: "q04-env", upsertNodes }, BRANCH);
 
 		const first = asQueryResult(queryWorkingSet(engine, { scope: "active" }));
 		assert.equal(first.records.length >= 1, true, "sanity: the page is not empty");
@@ -105,7 +106,7 @@ test("Q04 multibyte text is measured in bytes and never split", () => {
 				status: "open" as const,
 			});
 		}
-		engine.update({ operationId: "q04-multibyte", upsertNodes }, BRANCH);
+		commit(engine, { operationId: "q04-multibyte", upsertNodes }, BRANCH);
 
 		const { pages, ids } = pageThrough(engine);
 		for (const page of pages) {
@@ -135,7 +136,8 @@ test("Q04 a single oversized record returns a bounded chunk with forward progres
 		// A record larger than one 16 KiB mutation batch is built over two
 		// batches: 16 long evidence refs, then 8 long paths. Both stay inside the
 		// batch cap; the resulting record does not fit one query response.
-		engine.update(
+		commit(
+			engine,
 			{
 				operationId: "q04-oversized-a",
 				upsertNodes: [
@@ -156,7 +158,8 @@ test("Q04 a single oversized record returns a bounded chunk with forward progres
 			},
 			BRANCH,
 		);
-		engine.update(
+		commit(
+			engine,
 			{
 				operationId: "q04-oversized-b",
 				upsertNodes: [
@@ -297,7 +300,8 @@ test("Q04 bounded reads leave the working set untouched", () => {
 	const tmp = makeTempDir("pi-dag-q04-");
 	try {
 		const engine = MemoryEngine.open(tmp.path, "s");
-		engine.update(
+		commit(
+			engine,
 			{
 				operationId: "q04-readonly",
 				upsertNodes: [

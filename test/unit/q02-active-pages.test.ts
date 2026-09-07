@@ -12,6 +12,7 @@ import { test } from "node:test";
 import { MemoryEngine } from "../../src/memory/engine.ts";
 import { LIMITS, utf8Bytes } from "../../src/memory/limits.ts";
 import { queryWorkingSet } from "../../src/memory/query.ts";
+import { commit } from "../support/commit.ts";
 import { asQueryResult, type QueryResultShape } from "../support/retrieval-shape.ts";
 import { makeTempDir } from "../support/tmp.ts";
 
@@ -60,7 +61,7 @@ test("Q02 exhaustive active paging equals the expected set without repeats or ga
 			expected.push(id);
 			upsertNodes.push(sizedNode(id, `hypothesis ${index}`, 160));
 		}
-		engine.update({ operationId: "q02-seed", upsertNodes }, BRANCH);
+		commit(engine, { operationId: "q02-seed", upsertNodes }, BRANCH);
 
 		const first = asQueryResult(queryWorkingSet(engine, { scope: "active" }));
 		assert.equal(
@@ -92,13 +93,14 @@ test("Q02 a mutation between pages rejects the stale cursor explicitly", () => {
 		for (let index = 0; index < 27; index += 1) {
 			upsertNodes.push(sizedNode(`h${String(index).padStart(2, "0")}`, `hyp ${index}`, 160));
 		}
-		engine.update({ operationId: "q02-seed", upsertNodes }, BRANCH);
+		commit(engine, { operationId: "q02-seed", upsertNodes }, BRANCH);
 
 		const first = asQueryResult(queryWorkingSet(engine, { scope: "active" }));
 		const cursor = first.cursor;
 		assert.equal(typeof cursor, "string");
 
-		engine.update(
+		commit(
+			engine,
 			{
 				operationId: "q02-mutate",
 				upsertNodes: [
@@ -128,7 +130,7 @@ test("Q02 a changed query rejects a cursor issued for the previous query", () =>
 		for (let index = 0; index < 27; index += 1) {
 			upsertNodes.push(sizedNode(`h${String(index).padStart(2, "0")}`, `tiling ${index}`, 160));
 		}
-		engine.update({ operationId: "q02-seed", upsertNodes }, BRANCH);
+		commit(engine, { operationId: "q02-seed", upsertNodes }, BRANCH);
 
 		const first = asQueryResult(queryWorkingSet(engine, { scope: "active", q: "tiling" }));
 		assert.equal(first.records.length, LIMITS.maxQueryRecords);
@@ -157,7 +159,7 @@ test("Q02 eight requested IDs with only six fitting is never complete success", 
 			ids.push(id);
 			upsertNodes.push(sizedNode(id, `large record ${index}`, 1100));
 		}
-		engine.update({ operationId: "q02-big", upsertNodes }, BRANCH);
+		commit(engine, { operationId: "q02-big", upsertNodes }, BRANCH);
 
 		const result = asQueryResult(queryWorkingSet(engine, { scope: "active", ids }));
 		assert.equal(
@@ -214,7 +216,7 @@ test("Q02 byte-limited pages still cover the whole active set", () => {
 				expected.push(id);
 				upsertNodes.push(sizedNode(id, `wide record ${index}`, 1100));
 			}
-			engine.update({ operationId: `q02-wide-${wave}`, upsertNodes }, BRANCH);
+			commit(engine, { operationId: `q02-wide-${wave}`, upsertNodes }, BRANCH);
 		}
 
 		const { pages, ids } = pageThrough(engine, { scope: "active" });
@@ -248,7 +250,7 @@ test("Q02 read-only queries change neither the selection nor the evidence state"
 		for (let index = 0; index < 27; index += 1) {
 			upsertNodes.push(sizedNode(`h${String(index).padStart(2, "0")}`, `hyp ${index}`, 160));
 		}
-		engine.update({ operationId: "q02-seed", upsertNodes }, BRANCH);
+		commit(engine, { operationId: "q02-seed", upsertNodes }, BRANCH);
 		const before = engine.snapshot();
 
 		queryWorkingSet(engine, { scope: "active" });

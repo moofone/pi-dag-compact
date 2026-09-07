@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { MemoryEngine } from "../../src/memory/engine.ts";
 import { DagError } from "../../src/memory/errors.ts";
 import { dagStatus } from "../../src/memory/query.ts";
+import { commit } from "../support/commit.ts";
 import { makeTempDir } from "../support/tmp.ts";
 
 function branch(sessionId = "s1", leafId = "leaf-1") {
@@ -149,7 +150,7 @@ test("pending operations reconcile only on the expected branch", () => {
 			},
 			branch("s1", "leaf-a"),
 		);
-		assert.equal(pending.status, "pending_ref");
+		assert.equal(pending.status, "prepared");
 
 		engine.reconstruct([]);
 		const ignored: string[] = [];
@@ -200,6 +201,7 @@ test("forks inherit a revision and then diverge", () => {
 			branch("fork", "leaf-2"),
 		);
 		assert.notEqual(diverged.revisionId, first.revisionId);
+		child.acknowledgeRef(diverged.operationId, "e2");
 		assert.equal(child.snapshot().nodes.length, 2);
 		child.close();
 	} finally {
@@ -227,7 +229,8 @@ test("history search is not an active miss", () => {
 	const tmp = makeTempDir("pi-dag-engine-");
 	try {
 		const engine = openEngine(tmp.path);
-		engine.update(
+		commit(
+			engine,
 			{
 				operationId: "keep",
 				upsertNodes: [
@@ -243,7 +246,8 @@ test("history search is not an active miss", () => {
 			},
 			branch(),
 		);
-		engine.update(
+		commit(
+			engine,
 			{
 				operationId: "archive",
 				archiveIds: ["old"],

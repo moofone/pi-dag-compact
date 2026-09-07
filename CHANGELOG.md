@@ -5,6 +5,25 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Publication is driven by the branch pointer, not by a SQLite commit. Explicit
+  `prepared` / `selected` / `unselected` operation states, expected-parent
+  comparison on acknowledgement and on recovery, idempotent receipts that append
+  no second reference, and a pending operation that must be acknowledged or
+  quarantined before another update on the same position.
+- One full immutable snapshot per revision; checkpoint identity equals revision
+  identity and `checkpoints` is a view over `revisions`. The separate checkpoint
+  payload table and the 32-mutation replay bound are gone.
+- Reconstruction recomputes the snapshot and selection hashes from the loaded
+  JSON and revalidates schema, dependency subgraph and parent linkage. An
+  unreadable reference on the branch is reported rather than dropped, and a
+  refused load publishes nothing and refuses reduced context.
+- `npm run measure:revisions` reports database, WAL and session growth for 300
+  near-cap revisions. Reported, not claimed as a property.
+
 ## [0.4.0] - 2026-09-06
 
 ### Added

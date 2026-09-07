@@ -49,14 +49,17 @@ export class HandoffController {
 		if (this.fence) throw new DagError("handoff_fenced", this.fence);
 		assertHandoffEligible(engine);
 		const snap = engine.snapshot();
-		if (!snap.revisionId || !snap.checkpointId) {
-			throw new DagError("handoff_refused", "handoff requires a committed checkpoint");
+		const snapshotHash = engine.selectedSnapshotHash();
+		if (!snap.revisionId || !snap.checkpointId || !snapshotHash) {
+			throw new DagError("handoff_refused", "handoff requires a selected revision");
 		}
 		return {
 			sessionId: branch.sessionId,
 			leafId: branch.leafId,
 			revisionId: snap.revisionId,
+			// D1: the selected revision is the checkpoint the cut references.
 			checkpointId: snap.checkpointId,
+			snapshotHash,
 			coveredThroughEntryId: branch.leafId,
 		};
 	}
@@ -122,6 +125,7 @@ function currentFrom(ctx: ExtensionContext, runtime: ExtensionRuntime): HandoffC
 		sessionId: ctx.sessionManager.getSessionId(),
 		leafId: ctx.sessionManager.getLeafId() ?? "none",
 		revisionId: runtime.engine?.snapshot().revisionId ?? null,
+		snapshotHash: runtime.engine?.selectedSnapshotHash() ?? null,
 	};
 }
 

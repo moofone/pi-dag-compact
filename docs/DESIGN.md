@@ -29,8 +29,23 @@ state. Stored schema is independent of Graphology serialization.
 | Research ledger | Whole task | Observations, interpretations, decisions, superseding records |
 | Evidence artifacts | Files | Manifests, stdout, timings, patches, profiler captures |
 
-Pi JSONL stores small references. SQLite stores records and checkpoints.
-Enabling recording requires an explicit task directory.
+Pi JSONL stores small references. SQLite stores records and one full immutable
+snapshot per revision. Enabling recording requires an explicit task directory.
+
+The branch pointer is the selection authority; the latest SQLite revision is
+not. A revision is committed as `prepared`, becomes `selected` only when its Pi
+reference has been taken, and is `unselected` when quarantined. Between those
+two steps the public snapshot, query and handoff keep showing the previous
+selection, and another update on the same position is refused until the pending
+one is acknowledged or quarantined.
+
+Checkpoint identity equals revision identity: every revision is its own
+checkpoint, `checkpoints` is a view over `revisions`, and reconstruction is one
+row read plus verification — snapshot hash, selection hash, record schema, the
+whole `depends_on` subgraph, and parent linkage, all recomputed from the JSON
+that was actually read. A refused load publishes nothing and refuses reduced
+context; it never falls back to an older revision that would silently claim
+coverage of the lost suffix.
 
 ## Record sketch (M1)
 

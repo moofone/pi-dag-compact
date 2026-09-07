@@ -5,6 +5,7 @@ import { DagError } from "../../src/memory/errors.ts";
 import { validateDependsOn } from "../../src/memory/graph.ts";
 import { dagStatus, queryWorkingSet } from "../../src/memory/query.ts";
 import type { NodeStatus, WorkingEdge, WorkingNode } from "../../src/schema/working.ts";
+import { commit } from "../support/commit.ts";
 import { makeTempDir } from "../support/tmp.ts";
 
 const BRANCH = { sessionId: "s", leafId: "leaf-1" };
@@ -15,7 +16,8 @@ function node(id: string, kind: WorkingNode["kind"] = "task"): WorkingNode {
 
 function seedPair(dir: string, prerequisiteStatus: NodeStatus): MemoryEngine {
 	const engine = MemoryEngine.open(dir, "s");
-	engine.update(
+	commit(
+		engine,
 		{
 			operationId: "seed",
 			upsertNodes: [
@@ -67,7 +69,7 @@ test("S02 a blocked dependent is never a next action even with a done prerequisi
 	const tmp = makeTempDir("pi-dag-s02-");
 	try {
 		const engine = seedPair(tmp.path, "done");
-		engine.update({ operationId: "block-a", setStatus: [{ id: "A", status: "blocked" }] }, BRANCH);
+		commit(engine, { operationId: "block-a", setStatus: [{ id: "A", status: "blocked" }] }, BRANCH);
 		assert.equal(
 			dagStatus(engine)
 				.nextAction.map((item) => item.id)

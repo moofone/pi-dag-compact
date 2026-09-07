@@ -51,7 +51,8 @@
 		"eval:cuda-pilot": "node --experimental-strip-types src/eval/run-cuda-pilot.ts",
 		"eval:live": "node --experimental-strip-types src/eval/run-live.ts",
 		"pack:dry": "npm pack --dry-run",
-		"check": "npm run typecheck && npm run lint && npm test && npm run pack:dry"
+		"check": "npm run typecheck && npm run lint && npm test && npm run pack:dry",
+		"measure:revisions": "node --experimental-strip-types src/eval/run-revision-growth.ts"
 	},
 	"pi": {
 		"extensions": [

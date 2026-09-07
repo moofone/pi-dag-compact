@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { MemoryEngine } from "../../src/memory/engine.ts";
 import { DagError } from "../../src/memory/errors.ts";
 import { queryWorkingSet } from "../../src/memory/query.ts";
+import { commit } from "../support/commit.ts";
 import { makeTempDir } from "../support/tmp.ts";
 
 test("more than 200 active nodes are refused; archived rejections stay searchable", () => {
@@ -10,7 +11,8 @@ test("more than 200 active nodes are refused; archived rejections stay searchabl
 	try {
 		const engine = MemoryEngine.open(tmp.path, "s");
 		for (let start = 0; start < 200; start += 20) {
-			engine.update(
+			commit(
+				engine,
 				{
 					operationId: `seed-${start}`,
 					upsertNodes: Array.from({ length: 20 }, (_, offset) => {
@@ -29,7 +31,8 @@ test("more than 200 active nodes are refused; archived rejections stay searchabl
 		}
 		assert.throws(
 			() =>
-				engine.update(
+				commit(
+					engine,
 					{
 						operationId: "overflow",
 						upsertNodes: [{ id: "n200", kind: "task", title: "extra", body: "", status: "open" }],
@@ -38,11 +41,13 @@ test("more than 200 active nodes are refused; archived rejections stay searchabl
 				),
 			(error: unknown) => error instanceof DagError && error.code === "limit",
 		);
-		engine.update(
+		commit(
+			engine,
 			{ operationId: "archive-0", archiveIds: ["n0"] },
 			{ sessionId: "s", leafId: "l" },
 		);
-		engine.update(
+		commit(
+			engine,
 			{
 				operationId: "after-archive",
 				upsertNodes: [{ id: "n200", kind: "task", title: "extra", body: "", status: "open" }],
@@ -61,7 +66,8 @@ test("query truncation is incomplete coverage", () => {
 	const tmp = makeTempDir("pi-dag-query-trunc-");
 	try {
 		const engine = MemoryEngine.open(tmp.path, "s");
-		engine.update(
+		commit(
+			engine,
 			{
 				operationId: "many",
 				upsertNodes: Array.from({ length: 30 }, (_, index) => ({

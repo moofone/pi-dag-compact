@@ -3,7 +3,21 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { WorkingEdge, WorkingNode } from "../schema/working.ts";
 
-export type RevisionStatus = "pending_ref" | "selected" | "unselected";
+/**
+ * Explicit operation states.
+ *
+ * `prepared` — committed to SQLite, offered to nothing. Durable, and selected
+ * by nothing: the branch pointer is the selection authority, and a SQLite row
+ * is not a branch pointer.
+ * `selected` — its reference is on the branch and the selection was
+ * acknowledged here.
+ * `unselected` — quarantined. It stays for audit and is never published.
+ *
+ * Stores written before R2 use `pending_ref`; it is read back as `prepared`.
+ */
+export type RevisionStatus = "prepared" | "selected" | "unselected";
+
+const LEGACY_STATUS: Record<string, RevisionStatus> = { pending_ref: "prepared" };
 
 export interface RevisionRow {
 	revisionId: string;
@@ -15,7 +29,11 @@ export interface RevisionRow {
 	nodesJson: string;
 	edgesJson: string;
 	selectionJson: string | null;
+	/** sha256 of the canonical committed selection, or of its deliberate absence. */
+	selectionHash: string;
 	status: RevisionStatus;
+	/** What the host was observed to do with the reference append (R1 vocabulary). */
+	ackDurability: string | null;
 	expectedSessionId: string;
 	expectedBranchLeafId: string;
 	piEntryId: string | null;
@@ -36,6 +54,13 @@ export interface ResearchEventRow {
 	payloadJson: string;
 }
 
+/**
+ * A checkpoint row, derived from its revision.
+ *
+ * D1: one full immutable snapshot per revision, and checkpoint identity equals
+ * revision identity. There is no second copy of the graph; `checkpoints` is a
+ * view over `revisions`, and this row is materialized from one revision row.
+ */
 export interface CheckpointRow {
 	checkpointId: string;
 	revisionId: string;
@@ -80,19 +105,15 @@ CREATE TABLE IF NOT EXISTS revisions (
   nodes_json TEXT NOT NULL,
   edges_json TEXT NOT NULL,
   selection_json TEXT,
+  selection_hash TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL,
+  ack_durability TEXT,
   expected_session_id TEXT NOT NULL,
   expected_branch_leaf_id TEXT NOT NULL,
   pi_entry_id TEXT,
   created_at INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS checkpoints (
-  checkpoint_id TEXT PRIMARY KEY,
-  revision_id TEXT NOT NULL,
-  payload_json TEXT NOT NULL,
-  payload_hash TEXT NOT NULL,
-  created_at INTEGER NOT NULL
-);
+CREATE INDEX IF NOT EXISTS revisions_parent ON revisions (parent_revision_id);
 CREATE TABLE IF NOT EXISTS archived_nodes (
   id TEXT NOT NULL,
   revision_id TEXT NOT NULL,
@@ -133,6 +154,7 @@ export class SqliteStore {
 		this.db = new DatabaseSync(path);
 		this.db.exec(SCHEMA);
 		this.addMissingColumns();
+		this.reduceCheckpointsToView();
 	}
 
 	/**
@@ -143,6 +165,8 @@ export class SqliteStore {
 	private addMissingColumns(): void {
 		const wanted: Array<[string, string, string]> = [
 			["revisions", "selection_json", "TEXT"],
+			["revisions", "selection_hash", "TEXT NOT NULL DEFAULT ''"],
+			["revisions", "ack_durability", "TEXT"],
 			["research_events", "payload_hash", "TEXT NOT NULL DEFAULT ''"],
 		];
 		for (const [table, column, definition] of wanted) {
@@ -152,6 +176,25 @@ export class SqliteStore {
 			if (columns.some((row) => row.name === column)) continue;
 			this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 		}
+	}
+
+	/**
+	 * D1: `checkpoints` is a view over `revisions`, never a second table.
+	 *
+	 * A store written before R2 still has the old table; converting it belongs to
+	 * R8's migration, so here the view is only created when nothing occupies the
+	 * name. Either way nothing writes a second copy of the graph again.
+	 */
+	private reduceCheckpointsToView(): void {
+		const existing = this.db
+			.prepare("SELECT type FROM sqlite_master WHERE name = 'checkpoints'")
+			.get() as { type?: string } | undefined;
+		if (existing?.type === "table") return;
+		this.db.exec(
+			`CREATE VIEW IF NOT EXISTS checkpoints AS
+         SELECT revision_id AS checkpoint_id, revision_id, payload_hash, created_at
+         FROM revisions WHERE status != 'unselected'`,
+		);
 	}
 
 	close(): void {
@@ -231,7 +274,7 @@ export class SqliteStore {
 	listPending(sessionId: string, leafId: string): RevisionRow[] {
 		const rows = this.db
 			.prepare(
-				"SELECT * FROM revisions WHERE status = 'pending_ref' AND expected_session_id = ? AND expected_branch_leaf_id = ?",
+				"SELECT * FROM revisions WHERE status IN ('prepared', 'pending_ref') AND expected_session_id = ? AND expected_branch_leaf_id = ?",
 			)
 			.all(sessionId, leafId) as Array<Record<string, unknown>>;
 		return rows
@@ -241,7 +284,9 @@ export class SqliteStore {
 
 	listPendingForSession(sessionId: string): RevisionRow[] {
 		const rows = this.db
-			.prepare("SELECT * FROM revisions WHERE status = 'pending_ref' AND expected_session_id = ?")
+			.prepare(
+				"SELECT * FROM revisions WHERE status IN ('prepared', 'pending_ref') AND expected_session_id = ? ORDER BY revision",
+			)
 			.all(sessionId) as Array<Record<string, unknown>>;
 		return rows
 			.map((row) => this.mapRevision(row))
@@ -261,8 +306,9 @@ export class SqliteStore {
 			.prepare(
 				`INSERT INTO revisions (
           revision_id, revision, parent_revision_id, operation_id, payload_hash, checkpoint_id,
-          nodes_json, edges_json, selection_json, status, expected_session_id, expected_branch_leaf_id, pi_entry_id, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          nodes_json, edges_json, selection_json, selection_hash, status, ack_durability,
+          expected_session_id, expected_branch_leaf_id, pi_entry_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			)
 			.run(
 				row.revisionId,
@@ -274,7 +320,9 @@ export class SqliteStore {
 				row.nodesJson,
 				row.edgesJson,
 				row.selectionJson,
+				row.selectionHash,
 				row.status,
+				row.ackDurability,
 				row.expectedSessionId,
 				row.expectedBranchLeafId,
 				row.piEntryId,
@@ -282,37 +330,27 @@ export class SqliteStore {
 			);
 	}
 
-	setRevisionStatus(revisionId: string, status: RevisionStatus, piEntryId: string | null): void {
-		this.db
-			.prepare("UPDATE revisions SET status = ?, pi_entry_id = ? WHERE revision_id = ?")
-			.run(status, piEntryId, revisionId);
-	}
-
-	mutationsSinceCheckpoint(parentRevisionId: string | null): number {
-		if (!parentRevisionId) return 0;
-		let current: string | null = parentRevisionId;
-		let count = 0;
-		while (current) {
-			const row = this.getRevision(current);
-			if (!row) break;
-			if (row.checkpointId) break;
-			count += 1;
-			current = row.parentRevisionId;
-		}
-		return count;
-	}
-
-	insertCheckpoint(
-		checkpointId: string,
+	setRevisionStatus(
 		revisionId: string,
-		payloadJson: string,
-		payloadHash: string,
+		status: RevisionStatus,
+		piEntryId: string | null,
+		ackDurability: string | null = null,
 	): void {
 		this.db
 			.prepare(
-				"INSERT INTO checkpoints (checkpoint_id, revision_id, payload_json, payload_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+				"UPDATE revisions SET status = ?, pi_entry_id = ?, ack_durability = COALESCE(?, ack_durability) WHERE revision_id = ?",
 			)
-			.run(checkpointId, revisionId, payloadJson, payloadHash, Date.now());
+			.run(status, piEntryId, ackDurability, revisionId);
+	}
+
+	/** Revisions whose parent is this one, whatever their status. */
+	childRevisions(parentRevisionId: string): RevisionRow[] {
+		const rows = this.db
+			.prepare("SELECT * FROM revisions WHERE parent_revision_id = ?")
+			.all(parentRevisionId) as Array<Record<string, unknown>>;
+		return rows
+			.map((row) => this.mapRevision(row))
+			.filter((row): row is RevisionRow => row !== undefined);
 	}
 
 	archiveNode(id: string, revisionId: string, payloadJson: string): void {
@@ -383,19 +421,38 @@ export class SqliteStore {
 		}));
 	}
 
-	getCheckpoint(checkpointId: string): CheckpointRow | undefined {
-		const row = this.db
-			.prepare(
-				"SELECT checkpoint_id, revision_id, payload_json, payload_hash, created_at FROM checkpoints WHERE checkpoint_id = ?",
-			)
-			.get(checkpointId) as Record<string, unknown> | undefined;
-		if (!row) return undefined;
+	/**
+	 * The checkpoint for a revision, materialized from that revision's own row.
+	 *
+	 * Under D1 there is nothing else to read: the revision is the checkpoint, so
+	 * a checkpoint id is a revision id and the payload is built here rather than
+	 * stored a second time.
+	 */
+	getCheckpoint(checkpointId: string, taskId: string): CheckpointRow | undefined {
+		const row = this.getRevision(checkpointId);
+		if (!row || row.status === "unselected") return undefined;
+		const graph = parseGraph(row.nodesJson, row.edgesJson);
+		const payload = {
+			schemaVersion: 2,
+			checkpointId: row.revisionId,
+			sessionId: row.expectedSessionId,
+			branchAnchorId: row.expectedBranchLeafId,
+			coveredThroughEntryId: row.piEntryId ?? row.expectedBranchLeafId,
+			workingRevision: row.revision,
+			workingRevisionId: row.revisionId,
+			researchTaskId: taskId,
+			selection: row.selectionJson ? JSON.parse(row.selectionJson) : null,
+			requiredUserEntryIds: [],
+			requiredEvidence: graph.nodes.flatMap((node) => node.evidence),
+			nodes: graph.nodes,
+			edges: graph.edges,
+		};
 		return {
-			checkpointId: String(row.checkpoint_id),
-			revisionId: String(row.revision_id),
-			payloadJson: String(row.payload_json),
-			payloadHash: String(row.payload_hash),
-			createdAt: Number(row.created_at),
+			checkpointId: row.revisionId,
+			revisionId: row.revisionId,
+			payloadJson: JSON.stringify(payload),
+			payloadHash: row.payloadHash,
+			createdAt: row.createdAt,
 		};
 	}
 
@@ -533,7 +590,9 @@ export class SqliteStore {
 			nodesJson: String(row.nodes_json),
 			edgesJson: String(row.edges_json),
 			selectionJson: (row.selection_json as string | null) ?? null,
-			status: row.status as RevisionStatus,
+			selectionHash: String(row.selection_hash ?? ""),
+			status: LEGACY_STATUS[String(row.status)] ?? (row.status as RevisionStatus),
+			ackDurability: (row.ack_durability as string | null) ?? null,
 			expectedSessionId: String(row.expected_session_id),
 			expectedBranchLeafId: String(row.expected_branch_leaf_id),
 			piEntryId: (row.pi_entry_id as string | null) ?? null,

@@ -15,6 +15,7 @@ import { test } from "node:test";
 import { MemoryEngine } from "../../src/memory/engine.ts";
 import { LIMITS, utf8Bytes } from "../../src/memory/limits.ts";
 import { dagStatus, queryWorkingSet } from "../../src/memory/query.ts";
+import { commit } from "../support/commit.ts";
 import { asQueryResult } from "../support/retrieval-shape.ts";
 import { makeTempDir } from "../support/tmp.ts";
 
@@ -32,7 +33,8 @@ function build(prefix: string): Fixture {
 	const engine = MemoryEngine.open(tmp.path, "s");
 	const branch = { sessionId: "s", leafId: "l" };
 
-	const first = engine.update(
+	const first = commit(
+		engine,
 		{
 			operationId: "q01-1",
 			upsertNodes: [
@@ -52,7 +54,8 @@ function build(prefix: string): Fixture {
 		branch,
 	);
 
-	const second = engine.update(
+	const second = commit(
+		engine,
 		{
 			operationId: "q01-2",
 			setStatus: [
@@ -71,7 +74,8 @@ function build(prefix: string): Fixture {
 		payload: { note: "fusion regressed the pipeline", runId: "run-fusion" },
 	});
 
-	const third = engine.update(
+	const third = commit(
+		engine,
 		{
 			operationId: "q01-3",
 			upsertNodes: [
@@ -172,8 +176,24 @@ test("Q01 revision, checkpoint and research IDs resolve by type", () => {
 		assert.equal(byId.get(fixture.liveRevisionId)?.type, "revision");
 		assert.equal(byId.get(fixture.liveRevisionId)?.status, "found");
 
-		assert.equal(byId.get(fixture.checkpointId)?.type, "checkpoint");
+		// D1: checkpoint identity equals revision identity, so a checkpoint id is
+		// a revision id and resolves as one. The checkpoint is still addressable
+		// under that same id, materialized from the revision's own row.
+		assert.equal(byId.get(fixture.checkpointId)?.type, "revision");
 		assert.equal(byId.get(fixture.checkpointId)?.status, "found");
+		assert.equal(
+			(byId.get(fixture.checkpointId)?.record as { checkpointId?: string } | undefined)
+				?.checkpointId,
+			fixture.checkpointId,
+			"a resolved revision declares that it is its own checkpoint",
+		);
+		const checkpoint = fixture.engine.checkpointMeta(fixture.checkpointId);
+		assert.equal(
+			checkpoint?.workingRevisionId,
+			fixture.checkpointId,
+			"the checkpoint under that id is the revision itself",
+		);
+		assert.equal(checkpoint?.schemaVersion, 2);
 
 		const research = byId.get(fixture.researchRecordId);
 		assert.equal(research?.type, "research");
@@ -214,7 +234,8 @@ test("Q01 the card's record IDs resolve in at most two bounded retrieval calls",
 			{ id: "h2", kind: "hypothesis" as const, title: "does fusion help" },
 			{ id: "t3", kind: "task" as const, title: "write the report" },
 		];
-		engine.update(
+		commit(
+			engine,
 			{
 				operationId: "q01-card",
 				upsertNodes: nodes.map((node) => ({

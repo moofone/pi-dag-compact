@@ -59,7 +59,15 @@ export function createRuntime(pi: ExtensionAPI): ExtensionRuntime {
 		boundary.bind(config.taskDir);
 		const sessionId = ctx.sessionManager.getSessionId();
 		engine = MemoryEngine.open(config.taskDir, sessionId);
-		engine.reconstruct(collectPiRefs(ctx.sessionManager));
+		try {
+			engine.reconstruct(collectPiRefs(ctx.sessionManager));
+		} catch {
+			// A refused load is recorded on the engine as a reconstruction fault and
+			// nothing is published. Rethrowing here would only be swallowed by the
+			// host's event runner; the refusal has to be visible to `/dag`, to
+			// `dag_update` and to the handoff, which read the fault instead.
+		}
+		if (engine.reconstructionFault) return;
 		if (reason === "fork") {
 			engine.attachFork("origin", engine.snapshot().revisionId);
 		}
@@ -85,7 +93,12 @@ export function createRuntime(pi: ExtensionAPI): ExtensionRuntime {
 		if (!engine) return;
 		// A rebuild reimports exactly the refs the fence exists to distrust.
 		if (boundary.fence.refuses("context_rebuild")) return;
-		engine.reconstruct(collectPiRefs(ctx.sessionManager));
+		try {
+			engine.reconstruct(collectPiRefs(ctx.sessionManager));
+		} catch {
+			// Same as boot: the fault is on the engine, and every public surface
+			// refuses on it rather than presenting whatever it happened to hold.
+		}
 	});
 	pi.on("session_shutdown", async () => {
 		shutdown();
